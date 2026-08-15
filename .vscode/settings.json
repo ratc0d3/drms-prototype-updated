@@ -1,3 +1,4 @@
 {
-    "liveServer.settings.port": 5511
+    "liveServer.settings.port": 5511,
+    "github-copilot-chat-archiver.outputDirectory": "e:\\WORKING_PROTOTYPE\\frontend_prototype\\copilot_exports"
 }

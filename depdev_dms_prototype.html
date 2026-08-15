@@ -11,6 +11,13 @@
     href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Roboto+Mono:wght@400;500;600&display=swap"
     rel="stylesheet">
   <link rel="stylesheet" href="./styles.css" />
+  
+  <!-- PDF.js Library for PDF rendering -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  
+  <!-- Mammoth.js Library for DOCX rendering -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+  
   <style>
     *:focus {
       outline: 2px solid var(--navy);
@@ -390,21 +397,16 @@
           <div class="topbar-brand">
             <img src="logo.png" alt="DMS Logo" class="topbar-logo" />
           </div>
-          <div class="topbar-search">
-            <span class="search-icon" id="search-icon">🔍</span>
-            <input placeholder="Search documents..." id="search-input" oninput="handleSearchInput(this.value)"
-              onfocus="hideSearchIcon()" onblur="showSearchIconIfEmpty()" />
-          </div>
           <div class="topbar-right">
             <div class="topbar-nav-link" onclick="toggleNotif()" aria-label="Notifications">
               <span style="font-size: 1.1em; margin-right: 6px;">🔔</span> Notifications
               <div class="notif-dot"></div>
             </div>
+            <div class="topbar-nav-link" onclick="openUploadDocumentModal()" aria-label="Upload Document">
+              <span style="font-size: 1.1em; margin-right: 6px;">📤</span> Upload Document
+            </div>
             <div class="topbar-nav-link" onclick="openCompose()" aria-label="Send Document">
               <span style="font-size: 1.1em; margin-right: 6px;">✉️</span> Send Document
-            </div>
-            <div class="topbar-nav-link" onclick="openUploadDialog()" aria-label="Uploads">
-              <span style="font-size: 1.1em; margin-right: 6px;">📤</span> Uploads
             </div>
             <div class="topbar-nav-link" onclick="openAccountSettings()" aria-label="Settings">
               <span style="font-size: 1.1em; margin-right: 6px;">⚙️</span> Settings
@@ -412,54 +414,9 @@
             <!-- NOTIF PANEL -->
             <div class="notif-panel" id="notif-panel">
               <div class="notif-head">
-                <span>Notifications</span><a onclick="closeNotif()">Mark all read</a>
+                <span>Notifications</span><a onclick="markAllNotificationsRead()">Mark all read</a>
               </div>
-              <div class="notif-item unread">
-                <div class="notif-dot2"></div>
-                <div>
-                  <div class="notif-text">
-                    Document <strong>2026-04-163</strong> is pending RD
-                    approval
-                  </div>
-                  <div class="notif-time">2 hours ago</div>
-                </div>
-              </div>
-              <div class="notif-item unread">
-                <div class="notif-dot2"></div>
-                <div>
-                  <div class="notif-text">
-                    New document received from Finance Division
-                  </div>
-                  <div class="notif-time">3 hours ago</div>
-                </div>
-              </div>
-              <div class="notif-item unread">
-                <div class="notif-dot2"></div>
-                <div>
-                  <div class="notif-text">
-                    ⚠️ Document 2026-04-118 deadline in 2 days
-                  </div>
-                  <div class="notif-time">5 hours ago</div>
-                </div>
-              </div>
-              <div class="notif-item">
-                <div class="notif-dot2 read"></div>
-                <div>
-                  <div class="notif-text">
-                    Document 2026-03-200 approved by RD
-                  </div>
-                  <div class="notif-time">Yesterday</div>
-                </div>
-              </div>
-              <div class="notif-item">
-                <div class="notif-dot2 read"></div>
-                <div>
-                  <div class="notif-text">
-                    New staff account registered - pending activation
-                  </div>
-                  <div class="notif-time">2 days ago</div>
-                </div>
-              </div>
+              <div id="notif-list"></div>
             </div>
           </div>
         </div>
@@ -474,118 +431,195 @@
   <input type="file" id="ocr-upload-input" style="display: none" accept="image/*,application/pdf"
     onchange="handleOCRUpload(this)" />
 
-  <!-- COMPOSE MODAL -->
+  <!-- UPLOAD DOCUMENT MODAL -->
+  <div class="modal-overlay" id="upload-document-modal">
+    <div class="modal" style="max-width: 760px;">
+      <div class="modal-head">
+        <h3>Upload Document</h3>
+        <span class="modal-close" onclick="closeUploadDocumentModal()">✕</span>
+      </div>
+      <div class="modal-body">
+        <div class="compose-wrap">
+          <div class="field">
+            <label>Document Type</label>
+            <select id="upload-document-type">
+              <option value="Memorandum">Memorandum</option>
+              <option value="Letter">Letter</option>
+              <option value="Endorsement">Endorsement</option>
+              <option value="Report">Report</option>
+              <option value="Bill / Financial">Bill / Financial</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Document Category</label>
+            <select id="upload-document-category">
+              <option value="Administrative">Administrative</option>
+              <option value="Operations">Operations</option>
+              <option value="Finance">Finance</option>
+              <option value="Planning">Planning</option>
+              <option value="Monitoring and Evaluation">Monitoring and Evaluation</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Subject</label>
+            <input id="upload-document-subject" placeholder="Document subject or title" />
+          </div>
+          <div class="form-row" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;">
+            <div class="field">
+              <label>Reference Number</label>
+              <input id="upload-document-ref" placeholder="e.g. DEP-2026-001" />
+            </div>
+            <div class="field">
+              <label>Document Date</label>
+              <input id="upload-document-date" type="date" />
+            </div>
+          </div>
+          <div class="form-row" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;">
+            <div class="field">
+              <label>Confidentiality Level</label>
+              <select id="upload-document-confidentiality">
+                <option value="Internal">Internal</option>
+                <option value="Confidential">Confidential</option>
+                <option value="Restricted">Restricted</option>
+                <option value="Public">Public</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Priority</label>
+              <select id="upload-document-priority">
+                <option value="Normal">Normal</option>
+                <option value="High">High</option>
+                <option value="Urgent">Urgent</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;">
+            <div class="field">
+              <label>Source / Sender</label>
+              <input id="upload-document-source" placeholder="Office or individual" />
+            </div>
+            <div class="field">
+              <label>Uploaded By</label>
+              <input id="upload-document-uploader" value="" readonly />
+            </div>
+          </div>
+          <div class="field">
+            <label>Description / Remarks</label>
+            <textarea id="upload-document-description" placeholder="Provide a brief description or remarks for the document..." style="min-height:100px;"></textarea>
+          </div>
+          <input type="file" id="upload-document-file-input" style="display:none" onchange="handleUploadDocumentFile(this)" />
+          <div class="attach-zone" onclick="document.getElementById('upload-document-file-input').click()">
+            📎 <strong>Upload file</strong> - select the document to store in the repository<br />
+            <span style="font-size: 12px">PDF, DOCX, XLSX, JPG, PNG and other supported files</span>
+          </div>
+          <div id="upload-document-file-list" class="attachment-list"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-sec" onclick="closeUploadDocumentModal()">Cancel</button>
+        <button class="btn-send" onclick="submitUploadDocument()">Upload Document</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- COMPOSE / SEND-ROUTE MODAL -->
   <div class="modal-overlay" id="compose-modal">
-    <div class="modal">
+    <div class="modal" style="max-width: 780px;">
       <div class="modal-head">
         <h3>Send Document</h3>
         <span class="modal-close" onclick="closeCompose()">✕</span>
       </div>
       <div class="modal-body">
         <div class="compose-wrap">
-          <div class="compose-to">
-            <label>To:</label><input id="compose-to" list="compose-recipient-list"
-              placeholder="Recipient name, role, or email..." />
-            <datalist id="compose-recipient-list"></datalist>
+
+          <!-- Lifecycle notice -->
+          <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:0.7rem 1rem;margin-bottom:1.25rem;font-size:12.5px;color:#1e40af;line-height:1.5;">
+            <strong>Send Document workflow:</strong> Select an existing document from the repository → fill in destination details → click <em>Send Document</em>.
+            To introduce a new document, use the <strong>Upload Document</strong> function instead.
           </div>
-          <div class="compose-to">
-            <label>CC:</label><input id="compose-cc" list="compose-recipient-list" placeholder="Optional CC..." />
-          </div>
-          <div class="compose-subj">
-            <input id="compose-subject" placeholder="Subject / Document title" />
-          </div>
-          <div class="field" style="margin-top: 0.5rem">
-            <label>Document Direction</label><select id="compose-kind">
-              <option value="outgoing">Outgoing</option>
-              <option value="incoming">Incoming</option>
+
+          <!-- Step 1: Select document -->
+          <div class="field">
+            <label>Step 1 — Select Document from Repository</label>
+            <select id="route-document-picker" onchange="selectRouteDocument(this.value)">
+              <option value="">Choose from the Document Repository...</option>
             </select>
           </div>
-          <div class="field" style="margin-top: 0.5rem">
-            <label>Document Type</label><select id="compose-type">
-              <option value="Memorandum">Memorandum</option>
-              <option value="Letter">Letter</option>
-              <option value="Bill / Financial">Bill / Financial</option>
-              <option value="Report">Report</option>
-              <option value="Endorsement">Endorsement</option>
-              <option value="Other">Other</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Remarks</label><textarea id="compose-remarks" class="compose-body" style="
-                  border: 1.5px solid var(--border);
-                  border-radius: 8px;
-                  padding: 0.6rem;
-                  width: 100%;
-                  min-height: 80px;
-                  font-family: var(--font);
-                  font-size: 14px;
-                  outline: none;
-                " placeholder="Add instructions or remarks..."></textarea>
-          </div>
-          <div class="field">
-            <label>Confidential?</label>
-            <div style="display: flex; gap: 1rem; margin-top: 0.3rem">
-              <label style="
-                    display: flex;
-                    align-items: center;
-                    gap: 0.4rem;
-                    font-size: 13px;
-                    font-weight: 400;
-                    text-transform: none;
-                    letter-spacing: 0;
-                  "><input type="radio" name="conf" value="yes" style="width: auto" />
-                Yes</label>
-              <label style="
-                    display: flex;
-                    align-items: center;
-                    gap: 0.4rem;
-                    font-size: 13px;
-                    font-weight: 400;
-                    text-transform: none;
-                    letter-spacing: 0;
-                  "><input type="radio" name="conf" value="no" checked style="width: auto" />
-                No</label>
+
+          <!-- Selected document summary card -->
+          <div id="route-document-summary" style="display:none; background:#f8fafc; border:1.5px solid var(--border); border-radius:10px; padding:1rem 1.25rem; margin-bottom:1.25rem;">
+            <div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.07em; margin-bottom:0.5rem; font-weight:600;">Selected Document</div>
+            <div id="route-document-summary-text" style="font-weight:700; color:var(--navy); font-size:14px; margin-bottom:0.5rem;"></div>
+            <div id="route-document-meta" style="font-size:12px; color:var(--muted); display:flex; gap:1.25rem; flex-wrap:wrap;"></div>
+            <div style="display:flex; gap:0.5rem; margin-top:0.75rem;">
+              <button class="btn-sm" id="route-doc-view-btn" onclick="" style="display:none;">👁 View</button>
+              <button class="btn-sm" id="route-doc-download-btn" onclick="" style="display:none;">⬇ Download</button>
+              <span id="route-doc-version-badge" style="display:none;"></span>
             </div>
           </div>
-          <div class="field">
-            <label>Physical copy exists?</label>
-            <div style="display: flex; gap: 1rem; margin-top: 0.3rem">
-              <label style="
-                    display: flex;
-                    align-items: center;
-                    gap: 0.4rem;
-                    font-size: 13px;
-                    font-weight: 400;
-                    text-transform: none;
-                    letter-spacing: 0;
-                  "><input type="radio" name="phys" value="yes" style="width: auto" />
-                Yes</label>
-              <label style="
-                    display: flex;
-                    align-items: center;
-                    gap: 0.4rem;
-                    font-size: 13px;
-                    font-weight: 400;
-                    text-transform: none;
-                    letter-spacing: 0;
-                  "><input type="radio" name="phys" value="no" checked style="width: auto" />
-                No</label>
+
+          <!-- Step 2: Destination details -->
+          <div style="font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:0.6rem;padding-top:0.25rem;border-top:1px solid var(--border);">Step 2 — Destination Details</div>
+
+          <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+            <div class="field">
+              <label>Destination Division <span style="color:var(--danger)">*</span></label>
+              <select id="compose-to-division">
+                <option value="">— Select Division —</option>
+                <option value="Office of the Regional Director">Office of the Regional Director (ORD)</option>
+                <option value="Monitoring and Evaluation Division">Monitoring and Evaluation Division (MED)</option>
+                <option value="Policy Formulation and Planning Division">Policy Formulation and Planning Division (PFP)</option>
+                <option value="Project Development, Investment Programming and Budget Division">Project Development, Investment Programming and Budget (PDIP)</option>
+                <option value="Development and Research Division">Development and Research Division (DRD)</option>
+                <option value="Finance and Administrative Division">Finance and Administrative Division (FAD)</option>
+                <option value="External">External / Outside Agency</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Recipient / Handler <span style="color:var(--danger)">*</span></label>
+              <input id="compose-to" list="compose-recipient-list" placeholder="Name, role, or email…" />
+              <datalist id="compose-recipient-list"></datalist>
             </div>
           </div>
-          <div class="attach-zone" onclick="showInfo('File picker would open here (PDF, DOCX, XLSX, images, etc.)')">
-            📎 <strong>Attach files</strong> - click to browse or drag &
-            drop<br />
-            <span style="font-size: 12px">Supports PDF, DOCX, XLSX, PNG, JPG and more</span>
+
+          <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+            <div class="field">
+              <label>Deadline (if applicable)</label>
+              <input id="compose-deadline" type="date" />
+            </div>
+            <div class="field">
+              <label>Priority</label>
+              <select id="compose-priority">
+                <option value="Normal">Normal</option>
+                <option value="High">High</option>
+                <option value="Urgent">Urgent</option>
+              </select>
+            </div>
           </div>
+
+          <div class="field">
+            <label>Instructions for Recipient</label>
+            <textarea id="compose-remarks" class="compose-body" style="border:1.5px solid var(--border);border-radius:8px;padding:0.6rem;width:100%;min-height:80px;font-family:var(--font);font-size:14px;outline:none;" placeholder="Instructions for the recipient (e.g. For signature, For information, For appropriate action)…"></textarea>
+          </div>
+
+          <div class="field">
+            <label>Remarks / Notes</label>
+            <textarea id="compose-remarks-extra" class="compose-body" style="border:1.5px solid var(--border);border-radius:8px;padding:0.6rem;width:100%;min-height:70px;font-family:var(--font);font-size:14px;outline:none;" placeholder="Additional remarks or routing notes…"></textarea>
+          </div>
+
+          <!-- Hidden legacy fields kept for JS compatibility -->
+          <input type="hidden" id="compose-kind" value="outgoing" />
+          <input type="hidden" id="compose-type" value="Memorandum" />
+          <input type="hidden" id="compose-subject" value="" />
+          <input type="file" id="compose-attachment-input" style="display:none" multiple onchange="handleComposeAttachment(this)" />
+          <div id="compose-attachment-list" style="display:none;"></div>
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn-sec" onclick="closeCompose()" aria-label="Cancel">
-          Cancel
-        </button>
-        <button class="btn-send" onclick="sendDoc()" aria-label="Send Document">
-          Send Document ↗
-        </button>
+        <button class="btn-sec" onclick="closeCompose()" aria-label="Cancel">Cancel</button>
+        <button class="btn-send" onclick="sendDoc()" aria-label="Send Document">Send Document ↗</button>
       </div>
     </div>
   </div>
@@ -629,6 +663,10 @@
           <div class="field">
             <label>Routed To</label>
             <input id="manual-to" placeholder="Recipient / office" />
+          </div>
+          <div class="field" id="manual-attachment-wrapper" style="display:none">
+            <label>Attached File</label>
+            <div id="manual-attachment-list" class="attachment-list"></div>
           </div>
           <div class="field">
             <label>Status</label>
@@ -711,6 +749,23 @@
         <button class="btn-send" onclick="submitUploadEncodeChoice(true)" aria-label="Yes">
           Yes
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- COMMUNICATION MODAL -->
+  <div class="modal-overlay" id="communication-modal">
+    <div class="modal" style="max-width: 720px;">
+      <div class="modal-head">
+        <h3>Reply to Document</h3>
+        <span class="modal-close" onclick="closeCommunicationModal()" aria-label="Close">✕</span>
+      </div>
+      <div class="modal-body" id="communication-modal-body" style="padding-bottom:0">
+        <!-- populated by renderCommunicationModal -->
+      </div>
+      <div class="modal-footer" style="justify-content: flex-end; gap: 0.75rem;">
+        <button class="btn-sec" onclick="closeCommunicationModal()" aria-label="Cancel">Cancel</button>
+        <button class="btn-send" onclick="submitReply(currentCommunicationRef)" aria-label="Send Reply">Send Reply</button>
       </div>
     </div>
   </div>
@@ -800,7 +855,7 @@
                     ">
                   <option value="flatbed">Flatbed Scanner</option>
                   <option value="adf">Automatic Document Feeder (ADF)</option>
-                  <option value="camera">Web Camera / Mobile Camera</option>
+                  <optgit statusion value="camera">Web Camera / Mobile Camera</option>
                 </select>
               </div>
 
@@ -1281,7 +1336,7 @@
   <div class="modal-overlay" id="quick-send-modal">
     <div class="modal" style="max-width: 520px">
       <div class="modal-head">
-        <h3 id="quick-send-title">Send Document</h3>
+        <h3 id="quick-send-title">Send Existing Document</h3>
         <span class="modal-close" onclick="closeQuickSend()" aria-label="Close">✕</span>
       </div>
       <div class="modal-body">
@@ -1292,17 +1347,30 @@
               aria-label="Recipient" />
           </div>
           <div class="field">
-            <label>Remarks</label>
+            <label>Instructions for Recipient</label>
             <textarea id="quick-send-remarks" class="compose-body" style="
                   border: 1.5px solid var(--border);
                   border-radius: 8px;
                   padding: 0.6rem;
                   width: 100%;" min-height: 90px; font-family: var(--font); font-size: 14px; outline:
-              none; " placeholder=" Add routing remarks..."></textarea>
+              none; " placeholder="Add instructions for the recipient..."></textarea>
+          </div>
+          <div class="field">
+            <label>Outlook Email Content</label>
+            <textarea id="quick-send-outlook" class="compose-body" style="
+                  border: 1.5px solid var(--border);
+                  border-radius: 8px;
+                  padding: 0.6rem;
+                  width: 100%;
+                  min-height: 120px;
+                  font-family: var(--font);
+                  font-size: 14px;
+                  outline: none;
+                " placeholder="Paste Outlook email content here..."></textarea>
           </div>
           <div class="quick-send-note">
             Document details are already saved. Sending here will
-            automatically update routing and status.
+            automatically update destination and status.
           </div>
         </div>
       </div>
@@ -1313,6 +1381,165 @@
         <button class="btn-send" onclick="submitQuickSend()" aria-label="Send Document">
           Send Document ↗
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DOCUMENT METADATA MODAL -->
+  <div class="modal-overlay" id="metadata-modal">
+    <div class="modal" style="max-width: 760px;">
+      <div class="modal-head">
+        <h3>Document Metadata</h3>
+        <span class="modal-close" onclick="closeMetadataModal()">✕</span>
+      </div>
+      <div class="modal-body" id="metadata-modal-body" style="padding:1.5rem;">
+        <!-- populated by showMetadataModal(ref) -->
+      </div>
+      <div class="modal-footer">
+        <button class="btn-sec" onclick="closeMetadataModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- UPLOAD NEW VERSION MODAL -->
+  <div class="modal-overlay" id="upload-version-modal">
+    <div class="modal" style="max-width: 620px;">
+      <div class="modal-head">
+        <h3>Upload New Version</h3>
+        <span class="modal-close" onclick="closeUploadVersionModal()">✕</span>
+      </div>
+      <div class="modal-body">
+        <div class="compose-wrap">
+          <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:0.7rem 1rem;margin-bottom:1.25rem;font-size:12.5px;color:#1e40af;line-height:1.5;">
+            <strong>Document Revision Workflow:</strong> Download the current version → edit externally → upload your revised file here. The system will create a new version while keeping the same document reference.
+          </div>
+          <div class="field">
+            <label>Document Reference</label>
+            <input id="version-doc-ref" readonly style="background:#f8fafc;color:var(--muted);" />
+          </div>
+          <div class="field">
+            <label>Subject</label>
+            <input id="version-doc-subject" readonly style="background:#f8fafc;color:var(--muted);" />
+          </div>
+          <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+            <div class="field">
+              <label>Current Version</label>
+              <input id="version-current" readonly style="background:#f8fafc;color:var(--muted);" />
+            </div>
+            <div class="field">
+              <label>New Version</label>
+              <input id="version-new" readonly style="background:#f8fafc;font-weight:700;color:var(--navy);" />
+            </div>
+          </div>
+          <div class="field">
+            <label>Version Notes / Revision Summary <span style="color:var(--danger)">*</span></label>
+            <textarea id="version-notes" placeholder="Briefly describe what changed in this version…" style="min-height:80px;width:100%;border:1.5px solid var(--border);border-radius:8px;padding:0.6rem;font-family:var(--font);font-size:14px;outline:none;resize:vertical;"></textarea>
+          </div>
+          <input type="file" id="version-file-input" style="display:none" onchange="handleVersionFile(this)" />
+          <div class="attach-zone" onclick="document.getElementById('version-file-input').click()">
+            📎 <strong>Upload revised file</strong> — select the new version of the document<br />
+            <span style="font-size:12px">PDF, DOCX, XLSX, JPG, PNG and other supported files</span>
+          </div>
+          <div id="version-file-list" class="attachment-list"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-sec" onclick="closeUploadVersionModal()">Cancel</button>
+        <button class="btn-send" onclick="submitNewVersion()">Upload New Version</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- VERSION HISTORY MODAL -->
+  <div class="modal-overlay" id="version-history-modal">
+    <div class="modal" style="max-width: 680px;">
+      <div class="modal-head">
+        <h3>Version History</h3>
+        <span class="modal-close" onclick="closeVersionHistoryModal()">✕</span>
+      </div>
+      <div class="modal-body" id="version-history-body" style="padding:1.25rem;">
+        <!-- populated by showVersionHistory(ref) -->
+      </div>
+      <div class="modal-footer">
+        <button class="btn-sec" onclick="closeVersionHistoryModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- WORKFLOW STATUS UPDATE MODAL -->
+  <div class="modal-overlay" id="status-update-modal">
+    <div class="modal" style="max-width: 540px;">
+      <div class="modal-head">
+        <h3>Update Document Status</h3>
+        <span class="modal-close" onclick="closeStatusUpdateModal()">✕</span>
+      </div>
+      <div class="modal-body" style="padding:1.5rem;">
+        <div id="status-update-doc-info" style="background:#f8f9fa;border:1px solid #e0e0e0;padding:1rem;border-radius:6px;margin-bottom:1.5rem;font-size:13px">
+          <!-- Document info populated by JavaScript -->
+        </div>
+        
+        <div style="margin-bottom:1.5rem">
+          <label style="display:block;font-weight:600;color:var(--navy);margin-bottom:0.75rem;font-size:14px">Select New Status:</label>
+          
+          <div class="field" style="margin-bottom:0.75rem">
+            <label style="display:flex;align-items:center;padding:0.75rem;border:2px solid #e0e0e0;border-radius:6px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='var(--navy)'" onmouseout="if(!this.querySelector('input').checked) this.style.borderColor='#e0e0e0'">
+              <input type="radio" name="workflow-status" value="Acknowledged" style="margin-right:0.75rem" onchange="selectWorkflowStatus(this)">
+              <div>
+                <div style="font-weight:600;color:var(--navy);font-size:13px">Acknowledge</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">Confirm receipt of the document</div>
+              </div>
+            </label>
+          </div>
+          
+          <div class="field" style="margin-bottom:0.75rem">
+            <label style="display:flex;align-items:center;padding:0.75rem;border:2px solid #e0e0e0;border-radius:6px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='var(--navy)'" onmouseout="if(!this.querySelector('input').checked) this.style.borderColor='#e0e0e0'">
+              <input type="radio" name="workflow-status" value="In Progress" style="margin-right:0.75rem" onchange="selectWorkflowStatus(this)">
+              <div>
+                <div style="font-weight:600;color:var(--navy);font-size:13px">In Progress</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">Currently working on the document</div>
+              </div>
+            </label>
+          </div>
+          
+          <div class="field" style="margin-bottom:0.75rem">
+            <label style="display:flex;align-items:center;padding:0.75rem;border:2px solid #e0e0e0;border-radius:6px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='var(--navy)'" onmouseout="if(!this.querySelector('input').checked) this.style.borderColor='#e0e0e0'">
+              <input type="radio" name="workflow-status" value="Needs Clarification" style="margin-right:0.75rem" onchange="selectWorkflowStatus(this)">
+              <div>
+                <div style="font-weight:600;color:var(--navy);font-size:13px">Needs Clarification</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">Requires additional information or instructions</div>
+              </div>
+            </label>
+          </div>
+          
+          <div class="field" style="margin-bottom:0.75rem">
+            <label style="display:flex;align-items:center;padding:0.75rem;border:2px solid #e0e0e0;border-radius:6px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='var(--navy)'" onmouseout="if(!this.querySelector('input').checked) this.style.borderColor='#e0e0e0'">
+              <input type="radio" name="workflow-status" value="On Hold" style="margin-right:0.75rem" onchange="selectWorkflowStatus(this)">
+              <div>
+                <div style="font-weight:600;color:var(--navy);font-size:13px">On Hold</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">Temporarily paused, awaiting conditions</div>
+              </div>
+            </label>
+          </div>
+          
+          <div class="field">
+            <label style="display:flex;align-items:center;padding:0.75rem;border:2px solid #e0e0e0;border-radius:6px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='var(--navy)'" onmouseout="if(!this.querySelector('input').checked) this.style.borderColor='#e0e0e0'">
+              <input type="radio" name="workflow-status" value="Done" style="margin-right:0.75rem" onchange="selectWorkflowStatus(this)">
+              <div>
+                <div style="font-weight:600;color:var(--navy);font-size:13px">Done</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">Completed required action on the document</div>
+              </div>
+            </label>
+          </div>
+        </div>
+        
+        <div class="field" id="status-comment-field" style="display:none">
+          <label>Comment / Note (optional)</label>
+          <textarea id="status-comment" rows="3" placeholder="Add additional information about this status change..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-sec" onclick="closeStatusUpdateModal()">Cancel</button>
+        <button class="btn-send" onclick="submitStatusUpdate()">Update Status</button>
       </div>
     </div>
   </div>

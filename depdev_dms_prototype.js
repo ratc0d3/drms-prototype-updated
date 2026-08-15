@@ -25,11 +25,16 @@ var REF_COUNTER_BY_MONTH = {};
 var currentEditingRef = null;
 var currentLogbookEditRef = null;
 var pendingUploadFileName = "";
+var pendingUploadFile = null;
 var pendingImportType = "upload"; // "upload" | "ocr"
+var currentManualUploadAttachment = null;
+var currentUploadDocumentFile = null;
+var composeAttachments = [];
 var currentLogbookView = "global"; // "global" | "division" | "user"
 var currentLogbookDivision = null; // Current division being viewed
 var currentLogbookUser = null; // Current user being viewed
 var currentQuickSendRef = null;
+var currentCommunicationRef = null;
 var userMgmtModal = { type: null, userId: null, resetMode: "manual" };
 var userMgmtNotice = "";
 var ACCOUNT_SECURITY_META = {};
@@ -437,6 +442,409 @@ function getAccountKey() {
     : [currentUser.role, currentUser.division || "", "local-user"].join("|");
 }
 
+var NOTIFICATIONS = [];
+var NOTIFICATION_STORAGE_KEY = "depdev7_notifications";
+var DOC_READ_STATE = {};
+var DOC_READ_STATE_STORAGE_KEY = "depdev7_document_read_states";
+
+function isValidNotification(notification) {
+  return (
+    notification &&
+    typeof notification.recipientKey === "string" &&
+    notification.recipientKey.trim() !== "" &&
+    typeof notification.type === "string" &&
+    (notification.type === "document_received" || notification.type === "new_reply") &&
+    typeof notification.documentId === "string" &&
+    notification.documentId.trim() !== ""
+  );
+}
+
+function loadNotifications() {
+  NOTIFICATIONS = [];
+  try {
+    if (typeof localStorage !== "undefined") {
+      var raw = localStorage.getItem(NOTIFICATION_STORAGE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          NOTIFICATIONS = parsed.filter(function (n) {
+            return isValidNotification(n);
+          });
+          if (NOTIFICATIONS.length !== parsed.length) {
+            saveNotifications();
+          }
+        }
+      }
+    }
+  } catch (e) {
+    NOTIFICATIONS = [];
+  }
+}
+
+function saveNotifications() {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(NOTIFICATION_STORAGE_KEY, JSON.stringify(NOTIFICATIONS));
+    }
+  } catch (e) {
+    // ignore storage failures
+  }
+}
+
+function loadDocReadStates() {
+  DOC_READ_STATE = {};
+  try {
+    if (typeof localStorage !== "undefined") {
+      var raw = localStorage.getItem(DOC_READ_STATE_STORAGE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") {
+          DOC_READ_STATE = parsed;
+        }
+      }
+    }
+  } catch (e) {
+    DOC_READ_STATE = {};
+  }
+}
+
+function saveDocReadStates() {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(DOC_READ_STATE_STORAGE_KEY, JSON.stringify(DOC_READ_STATE));
+    }
+  } catch (e) {
+    // ignore storage failures
+  }
+}
+
+function getDocReadStateKey(user) {
+  return getNotificationKeyForUser(user);
+}
+
+function getDocReadStateForUser(user) {
+  var key = getDocReadStateKey(user);
+  if (!key) return {};
+  return DOC_READ_STATE[key] || {};
+}
+
+function isDocumentReadByUser(ref, user) {
+  if (!ref || !user) return false;
+  var state = getDocReadStateForUser(user);
+  return !!state[ref];
+}
+
+function markDocumentReadForUser(ref, user) {
+  if (!ref || !user) return false;
+  var key = getDocReadStateKey(user);
+  if (!key) return false;
+  DOC_READ_STATE[key] = DOC_READ_STATE[key] || {};
+  if (DOC_READ_STATE[key][ref]) return false;
+  DOC_READ_STATE[key][ref] = true;
+  saveDocReadStates();
+  return true;
+}
+
+function normalizeDocumentContact(text) {
+  if (!text || typeof text !== "string") return "";
+  return text
+    .toLowerCase()
+    .replace(/[\.\,\-\_\/\s]+/g, " ")
+    .trim();
+}
+
+function findUserForDocumentContact(text) {
+  if (!text || typeof text !== "string") return null;
+  var normalized = normalizeDocumentContact(text);
+  if (!normalized) return null;
+
+  var allUsers = Object.values(USERS).concat(
+    USER_ACCOUNTS.map(function (u) {
+      return {
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        role: u.role,
+        roleLabel: u.roleLabel || u.role,
+        division: u.division,
+      };
+    }),
+  );
+
+  for (var i = 0; i < allUsers.length; i++) {
+    var u = allUsers[i];
+    if (!u) continue;
+    var variants = [u.name, u.email, u.role, u.roleLabel]
+      .filter(Boolean)
+      .map(normalizeDocumentContact);
+    for (var j = 0; j < variants.length; j++) {
+      if (!variants[j]) continue;
+      if (normalized === variants[j]) return u;
+      if (normalized.indexOf(variants[j]) !== -1) return u;
+      if (variants[j].indexOf(normalized) !== -1) return u;
+    }
+  }
+  return null;
+}
+
+function getDocumentRecipientKey(doc) {
+  if (!doc) return "";
+  if (doc.recipientId) return doc.recipientId;
+  if (doc.recipientEmail) return doc.recipientEmail;
+  if (doc.recipientName) {
+    var recipient = resolveRecipient(doc.recipientName) || findUserForDocumentContact(doc.recipientName);
+    if (recipient) return getNotificationKeyForUser(recipient);
+    return doc.recipientName;
+  }
+  if (doc.to) {
+    var recipient = resolveRecipient(doc.to) || findUserForDocumentContact(doc.to);
+    if (recipient) return getNotificationKeyForUser(recipient);
+    return doc.to;
+  }
+  return "";
+}
+
+function getDocumentSenderKey(doc) {
+  if (!doc) return "";
+  if (doc.senderId) return doc.senderId;
+  if (doc.senderEmail) return doc.senderEmail;
+  if (doc.senderName) return doc.senderName;
+  if (doc.from) {
+    var sender = resolveRecipient(doc.from) || findUserForDocumentContact(doc.from);
+    if (sender) return getNotificationKeyForUser(sender);
+    return doc.from;
+  }
+  return "";
+}
+
+function isIncomingDocumentForUser(doc, user) {
+  if (!doc) return false;
+  if (!doc.recipientId && !doc.recipientName && !doc.to) return false;
+  var recipientKey = getDocumentRecipientKey(doc);
+  if (!recipientKey) return false;
+  return recipientKey === getDocReadStateKey(user);
+}
+
+function isOutgoingDocumentForUser(doc, user) {
+  if (!doc) return false;
+  var senderKey = getDocumentSenderKey(doc);
+  if (!senderKey) return false;
+  return senderKey === getDocReadStateKey(user);
+}
+
+function isRuntimeDocument(doc) {
+  return doc && doc.isSample !== true;
+}
+
+function getUnreadIncomingCount(user) {
+  user = user || currentUser;
+  return getVisibleDocumentsForRole().filter(function (d) {
+    return isRuntimeDocument(d) && isIncomingDocumentForUser(d, user) && !isDocumentReadByUser(d.ref, user);
+  }).length;
+}
+
+function getUnreadOutgoingCount(user) {
+  user = user || currentUser;
+  return getVisibleDocumentsForRole().filter(function (d) {
+    return isRuntimeDocument(d) && isOutgoingDocumentForUser(d, user) && !isDocumentReadByUser(d.ref, user);
+  }).length;
+}
+
+function markDocumentReadForCurrentUser(ref) {
+  var changed = markDocumentReadForUser(ref, currentUser);
+  if (changed) {
+    renderNav();
+  }
+  return changed;
+}
+
+function getNotificationKeyForUser(user) {
+  if (!user) return "";
+  if (user.email) return user.email;
+  if (user.id) return user.id;
+  if (user.name) return user.name;
+  return [user.role || "", user.division || "", user.name || ""].join("|");
+}
+
+function getCurrentUserNotificationKey() {
+  return getNotificationKeyForUser(currentUser);
+}
+
+function getNotificationsForKey(key) {
+  return NOTIFICATIONS.filter(function (n) {
+    return n.recipientKey === key;
+  }).sort(function (a, b) {
+    return new Date(b.dateTime) - new Date(a.dateTime);
+  });
+}
+
+function getNotificationsForCurrentUser() {
+  return getNotificationsForKey(getCurrentUserNotificationKey());
+}
+
+function getUnreadNotificationCount() {
+  return getNotificationsForCurrentUser().filter(function (n) {
+    return !n.read;
+  }).length;
+}
+
+function renderNotificationItemHtml(notification) {
+  var icon =
+    notification.type === "document_received"
+      ? "📄"
+      : notification.type === "new_reply"
+      ? "💬"
+      : "🔔";
+  var title =
+    notification.type === "document_received"
+      ? "New Document"
+      : notification.type === "new_reply"
+      ? "New Reply"
+      : "Notification";
+  var detail = "";
+  if (notification.type === "document_received") {
+    detail =
+      escapeHtml(notification.senderName || "Sender") +
+      " sent you a document: \"" +
+      escapeHtml(notification.documentTitle || notification.documentId || "") +
+      "\"";
+  } else if (notification.type === "new_reply") {
+    detail =
+      escapeHtml(notification.senderName || "Sender") +
+      " replied to: \"" +
+      escapeHtml(notification.documentTitle || notification.documentId || "") +
+      "\"";
+  } else {
+    detail = escapeHtml(notification.message || "");
+  }
+  var preview = notification.preview
+    ? '<div class="notif-preview">' + escapeHtml(notification.preview) + "</div>"
+    : "";
+  var timeLabel = formatRelativeTime(notification.dateTime || new Date().toISOString());
+  var itemClass = notification.read ? "" : "unread";
+  var dotClass = notification.read ? "read" : "";
+  var docArg = JSON.stringify(notification.documentRef || "");
+  var idArg = JSON.stringify(notification.id || "");
+  return (
+    '<div class="notif-item ' +
+    itemClass +
+    '"><div class="notif-dot2 ' +
+    dotClass +
+    '"></div><div class="notif-content" style="flex:1;cursor:pointer" onclick="openNotificationDocument(' +
+    docArg +
+    ', ' +
+    idArg +
+    ')"><div class="notif-text"><strong>' +
+    icon +
+    " " +
+    escapeHtml(title) +
+    '</strong><div style="margin-top:0.35rem;line-height:1.4">' +
+    detail +
+    "</div>" +
+    preview +
+    '</div><div class="notif-time">' +
+    escapeHtml(timeLabel) +
+    "</div></div></div>"
+  );
+}
+
+function renderNotificationPanel() {
+  var listContainer = document.getElementById("notif-list");
+  if (!listContainer) return;
+
+  var panel = listContainer.closest("#notif-panel");
+  if (panel) {
+    Array.from(panel.children).forEach(function (child) {
+      if (
+        child !== listContainer &&
+        child !== panel.querySelector(".notif-head") &&
+        child.classList &&
+        child.classList.contains("notif-item")
+      ) {
+        child.remove();
+      }
+    });
+  }
+
+  var notifs = getNotificationsForCurrentUser();
+  var html = "";
+  if (!notifs.length) {
+    html =
+      '<div style="padding:1rem;color:var(--muted);font-size:13px">No new notifications.</div>';
+  } else {
+    notifs.forEach(function (n) {
+      html += renderNotificationItemHtml(n);
+    });
+  }
+  listContainer.innerHTML = html;
+  updateNotificationBadge(getUnreadNotificationCount());
+  renderNav();
+}
+
+function openNotificationDocument(docRef, notificationId) {
+  if (notificationId) {
+    var notif = NOTIFICATIONS.find(function (n) {
+      return n.id === notificationId;
+    });
+    if (notif && !notif.read) {
+      notif.read = true;
+      saveNotifications();
+    }
+  }
+  renderNotificationPanel();
+  closeNotif();
+  viewDoc(docRef);
+}
+
+function markAllNotificationsRead() {
+  var key = getCurrentUserNotificationKey();
+  var changed = false;
+  NOTIFICATIONS.forEach(function (n) {
+    if (n.recipientKey === key && !n.read) {
+      n.read = true;
+      changed = true;
+    }
+  });
+  if (changed) saveNotifications();
+  renderNotificationPanel();
+}
+
+function addNotification(notification) {
+  if (!notification || !notification.recipientKey) return;
+  notification.id = notification.id || "notif-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+  notification.read = notification.read || false;
+  notification.dateTime = notification.dateTime || new Date().toISOString();
+  if (!notification.documentId && notification.documentRef) {
+    notification.documentId = notification.documentRef;
+  }
+  NOTIFICATIONS.unshift(notification);
+  saveNotifications();
+  renderNotificationPanel();
+}
+
+function resolveUserFromLabel(label) {
+  return resolveRecipient(label);
+}
+
+function determineReplyNotificationRecipient(doc) {
+  if (!doc) return null;
+  var currentKey = getCurrentUserNotificationKey();
+  var recipient = resolveRecipient(doc.to);
+  if (recipient && getNotificationKeyForUser(recipient) !== currentKey) {
+    return recipient;
+  }
+  var lastSenderLabel = doc.lastSentBy || doc.from;
+  var lastSender = resolveUserFromLabel(lastSenderLabel);
+  if (lastSender && getNotificationKeyForUser(lastSender) !== currentKey) {
+    return lastSender;
+  }
+  var originalSender = resolveUserFromLabel(doc.from);
+  if (originalSender && getNotificationKeyForUser(originalSender) !== currentKey) {
+    return originalSender;
+  }
+  return null;
+}
+
 var USERS = {
   admin: {
     role: "admin",
@@ -504,107 +912,166 @@ var USERS = {
   },
 };
 
-var DOCS = [
+// ═══════════════════════════════════════════════════════════════════════════
+// DOCUMENT STORAGE WITH LOCALSTORAGE PERSISTENCE
+// ═══════════════════════════════════════════════════════════════════════════
+
+var DOCS_DEFAULT = [
   {
     ref: "2026-05-001",
     type: "Memorandum",
+    category: "Administrative",
     from: "Chief Reyes",
     to: "All Staff",
     subject: "Division Performance Target 2026",
     status: "For ARD Clearance",
     date: "2026-05-14",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Finance and Administrative Division",
+    description: "Sets out the division performance targets for the calendar year 2026.",
+    uploadedBy: "Chief Reyes",
     kind: "outgoing",
     division: "Finance and Administrative Division",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Chief Reyes", date: "2026-05-14", note: "Initial upload" }],
     tracking: { lastActor: "dc", lastUpdated: "2026-05-14T08:00:00Z" },
   },
   {
     ref: "2026-05-002",
     type: "Report",
+    category: "Operations",
     from: "Staff Ana",
     to: "Chief Reyes",
     subject: "Weekly Accomplishment Report",
     status: "For ARD Clearance",
     date: "2026-05-14",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Monitoring and Evaluation Division",
+    description: "Weekly accomplishment report for the period ending May 14, 2026.",
+    uploadedBy: "Staff Ana",
     kind: "incoming",
     division: "Finance and Administrative Division",
+    version: 2,
+    versionHistory: [
+      { version: 1, uploadedBy: "Staff Ana", date: "2026-05-07", note: "Initial submission" },
+      { version: 2, uploadedBy: "Staff Ana", date: "2026-05-14", note: "Revised with updated figures" }
+    ],
     tracking: { lastActor: "staff", lastUpdated: "2026-05-14T09:30:00Z" },
   },
   {
     ref: "2026-05-003",
     type: "Endorsement",
+    category: "Administrative",
     from: "Supervisor Jose",
     to: "Chief Reyes",
     subject: "Leave Application Endorsement",
     status: "Approved",
     date: "2026-05-14",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Monitoring and Evaluation Division",
+    description: "Endorsement of leave application for MED staff member.",
+    uploadedBy: "Supervisor Jose",
     kind: "incoming",
     division: "Finance and Administrative Division",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Supervisor Jose", date: "2026-05-14", note: "Initial upload" }],
     tracking: { lastActor: "supervisor", lastUpdated: "2026-05-14T10:15:00Z" },
   },
   {
     ref: "2026-05-004",
     type: "Memorandum",
+    category: "Administrative",
     from: "Sir Harry",
     to: "Regional Staff",
     subject: "DMS System Maintenance Advisory",
     status: "Released",
     date: "2026-05-14",
     conf: false,
+    confidentialityLevel: "Public",
+    priority: "Normal",
+    source: "Office of the Regional Director",
+    description: "Advisory on scheduled maintenance of the Document Management System.",
+    uploadedBy: "Sir Harry",
     kind: "outgoing",
     division: "Office of the Regional Director",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-05-14", note: "Initial upload" }],
     tracking: { lastActor: "admin", lastUpdated: "2026-05-14T11:00:00Z" },
   },
   {
     ref: "2026-05-005",
     type: "Letter",
+    category: "Operations",
     from: "External Partner",
     to: "Regional Director",
     subject: "Invitation: Regional Planning Summit",
     status: "For RD Approval",
     date: "2026-05-14",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "High",
+    source: "External / NEDA Central Office",
+    description: "Formal invitation to the Regional Planning Summit scheduled for June 2026.",
+    uploadedBy: "Sir Harry",
     kind: "incoming",
     division: "Office of the Regional Director",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-05-14", note: "Received and uploaded" }],
     tracking: { lastActor: "rd", lastUpdated: "2026-05-14T13:45:00Z" },
   },
   {
     ref: "2026-05-006",
     type: "Endorsement",
+    category: "Planning",
     from: "Division Chief",
     to: "ARD",
     subject: "Project Proposal Clearance Request",
     status: "For ARD Clearance",
     date: "2026-05-14",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "High",
+    source: "Policy Formulation and Planning Division",
+    description: "Request for ARD clearance on project proposal before submission to NEDA.",
+    uploadedBy: "Chief Reyes",
     kind: "incoming",
     division: "Office of the Regional Director",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Chief Reyes", date: "2026-05-14", note: "Initial upload" }],
     tracking: { lastActor: "ard", lastUpdated: "2026-05-14T14:20:00Z" },
   },
   {
     ref: "2026-04-155",
     type: "Endorsement",
+    category: "Administrative",
     from: "HR Division",
     to: "RD",
     subject: "Personnel Action Form — Promotion",
     status: "Approved",
     date: "2026-04-26",
     conf: false,
+    confidentialityLevel: "Restricted",
+    priority: "Normal",
+    source: "Finance and Administrative Division",
+    description: "Personnel action form for staff promotion endorsement to the Regional Director.",
+    uploadedBy: "Sir Harry",
     kind: "incoming",
     division: "Finance and Administrative Division",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-04-26", note: "Initial upload" }],
     tracking: {
       createdAt: "2026-04-26T09:00:00",
       createdBy: "HR Division",
       lastUpdated: "2026-04-26T15:30:00",
       updatedBy: "RD",
       trail: [
-        {
-          user: "HR Division",
-          action: "Created",
-          timestamp: "2026-04-26T09:00:00",
-        },
+        { user: "HR Division", action: "Created", timestamp: "2026-04-26T09:00:00" },
         { user: "RD", action: "Received", timestamp: "2026-04-26T10:15:00" },
         { user: "RD", action: "Approved", timestamp: "2026-04-26T15:30:00" },
       ],
@@ -613,14 +1080,22 @@ var DOCS = [
   {
     ref: "2026-04-148",
     type: "Report",
+    category: "Monitoring and Evaluation",
     from: "MED",
     to: "RD",
     subject: "Monthly Monitoring Report March 2026",
     status: "Released",
     date: "2026-04-25",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Monitoring and Evaluation Division",
+    description: "Monthly monitoring report for March 2026 covering regional programs.",
+    uploadedBy: "Sir Harry",
     kind: "outgoing",
     division: "Monitoring and Evaluation Division",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-04-25", note: "Initial upload" }],
     tracking: {
       createdAt: "2026-04-25T14:00:00",
       createdBy: "MED",
@@ -636,14 +1111,22 @@ var DOCS = [
   {
     ref: "2026-04-140",
     type: "Letter",
+    category: "Operations",
     from: "ORD",
     to: "External",
     subject: "Reply to NEDA Memorandum No. 2026-021",
     status: "Released",
     date: "2026-04-24",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Office of the Regional Director",
+    description: "Official reply letter to NEDA Central regarding Memorandum No. 2026-021.",
+    uploadedBy: "Sir Harry",
     kind: "outgoing",
     division: "Operations and Training Division",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-04-24", note: "Initial upload" }],
     tracking: {
       createdAt: "2026-04-24T11:00:00",
       createdBy: "ORD",
@@ -663,33 +1146,65 @@ var DOCS = [
   {
     ref: "2026-04-118",
     type: "Confidential",
+    category: "Administrative",
     from: "RD Office",
     to: "ARD",
     subject: "[Confidential — Reference Only]",
     status: "For ARD Clearance",
     date: "2026-04-20",
     conf: true,
+    confidentialityLevel: "Confidential",
+    priority: "High",
+    source: "Office of the Regional Director",
+    description: "Confidential document — access restricted to authorized personnel.",
+    uploadedBy: "Sir Harry",
     kind: "incoming",
     division: "ORD",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-04-20", note: "Initial upload" }],
   },
   {
     ref: "2026-03-200",
     type: "Memorandum",
+    category: "Finance",
     from: "Budget Division",
     to: "RD",
     subject: "Supplemental Budget Proposal 2026",
     status: "Approved",
     date: "2026-03-30",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "High",
+    source: "Finance and Administrative Division",
+    description: "Supplemental budget proposal for additional operational requirements in 2026.",
+    uploadedBy: "Sir Harry",
     kind: "incoming",
     division: "Finance and Administrative Division",
+    version: 2,
+    versionHistory: [
+      { version: 1, uploadedBy: "Sir Harry", date: "2026-03-25", note: "Initial submission" },
+      { version: 2, uploadedBy: "Sir Harry", date: "2026-03-30", note: "Revised with updated budget figures" }
+    ],
   },
   {
     ref: "2026-03-185",
-    type: "Bill",
+    type: "Bill / Financial",
+    category: "Finance",
     from: "Supplier XYZ",
     to: "FAD",
     subject: "Invoice for Office Supplies",
+    status: "Pending",
+    date: "2026-03-28",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Supplier XYZ",
+    description: "Invoice for office supplies delivery — for FAD processing.",
+    uploadedBy: "Sir Harry",
+    kind: "incoming",
+    division: "Finance and Administrative Division",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-03-28", note: "Initial upload" }],
   },
   // Sample documents for testing expired document notifications
   {
@@ -759,74 +1274,122 @@ var DOCS = [
   {
     ref: "2026-03-175",
     type: "Memorandum",
+    category: "Planning",
     from: "PFP Division",
     to: "RD",
     subject: "Policy Review Guidelines",
     status: "For RD Approval",
     date: "2026-03-25",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Policy Formulation and Planning Division",
+    description: "Guidelines for the policy review cycle for the current fiscal year.",
+    uploadedBy: "Sir Harry",
     kind: "outgoing",
     division: "Policy Formulation and Planning Division",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-03-25", note: "Initial upload" }],
   },
   {
     ref: "2026-03-160",
     type: "Report",
+    category: "Monitoring and Evaluation",
     from: "DRD Division",
     to: "ARD",
     subject: "Research Findings Summary",
     status: "Approved",
     date: "2026-03-20",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Development and Research Division",
+    description: "Summary of research findings for Q1 2026.",
+    uploadedBy: "Sir Harry",
     kind: "incoming",
     division: "Development and Research Division",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-03-20", note: "Initial upload" }],
   },
   {
     ref: "2026-03-150",
     type: "Letter",
+    category: "Operations",
     from: "PDIP Division",
     to: "External Agency",
     subject: "Project Proposal Submission",
     status: "Released",
     date: "2026-03-15",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Project Development, Investment Programming and Budget Division",
+    description: "Formal project proposal submission to external agency.",
+    uploadedBy: "Sir Harry",
     kind: "outgoing",
     division: "Project Development, Investment Programming and Budget Division",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-03-15", note: "Initial upload" }],
   },
   {
     ref: "2026-03-140",
     type: "Memorandum",
+    category: "Administrative",
     from: "ARD Office",
     to: "All Divisions",
     subject: "ARD Clearance Guidelines",
     status: "For ARD Clearance",
     date: "2026-03-12",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Office of the Regional Director",
+    description: "Updated guidelines for ARD clearance processes.",
+    uploadedBy: "Sir Harry",
     kind: "outgoing",
     division: "Office of the Regional Director",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-03-12", note: "Initial upload" }],
   },
   {
     ref: "2026-03-130",
     type: "Endorsement",
+    category: "Operations",
     from: "External Agency",
     to: "RD",
     subject: "Endorsement for Regional Approval",
     status: "For RD Approval",
     date: "2026-03-10",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "High",
+    source: "External Agency",
+    description: "External agency endorsement requiring regional director approval.",
+    uploadedBy: "Sir Harry",
     kind: "incoming",
     division: "Office of the Regional Director",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-03-10", note: "Received and uploaded" }],
   },
   {
     ref: "2026-03-120",
     type: "Report",
+    category: "Administrative",
     from: "Admin Office",
     to: "ARD",
     subject: "Monthly Administrative Report",
     status: "Approved",
     date: "2026-03-08",
     conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Office of the Regional Director",
+    description: "Monthly administrative report for February 2026.",
+    uploadedBy: "Sir Harry",
     kind: "outgoing",
     division: "Office of the Regional Director",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-03-08", note: "Initial upload" }],
   },
   // DEMONSTRATION SAMPLES: Documents with custom expiration dates
   {
@@ -1163,6 +1726,40 @@ var DOCS = [
   },
 ];
 
+// Initialize DOCS from localStorage or use default
+function initializeDocuments() {
+  var saved = localStorage.getItem('depdev_docs');
+  if (saved) {
+    try {
+      DOCS = JSON.parse(saved);
+      console.log('Loaded', DOCS.length, 'documents from localStorage');
+      return;
+    } catch (e) {
+      console.error('Failed to load documents from localStorage:', e);
+    }
+  }
+  // If no saved docs or error, use DOCS_DEFAULT
+  console.log('Using default documents');
+}
+
+// Save DOCS to localStorage
+function saveDocuments() {
+  try {
+    localStorage.setItem('depdev_docs', JSON.stringify(DOCS));
+    console.log('Saved', DOCS.length, 'documents to localStorage');
+  } catch (e) {
+    console.error('Failed to save documents to localStorage:', e);
+  }
+}
+
+// Initialize on page load
+var DOCS = DOCS_DEFAULT;
+initializeDocuments();
+
+DOCS.forEach(function (doc) {
+  doc.isSample = true;
+});
+
 // Document tracking functions
 // Document tracking functions
 function ensureTrail(doc) {
@@ -1313,9 +1910,54 @@ function getDocumentTrail(ref) {
   return doc && doc.tracking ? doc.tracking.trail : [];
 }
 
-function formatTimestamp(timestamp) {
+function formatManilaDate(date) {
+  if (!(date instanceof Date)) date = new Date(date);
+  if (isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-PH", {
+    timeZone: "Asia/Manila",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(date);
+}
+
+function formatManilaDateTime(date) {
+  if (!(date instanceof Date)) date = new Date(date);
+  if (isNaN(date.getTime())) return "";
+  var datePart = new Intl.DateTimeFormat("en-PH", {
+    timeZone: "Asia/Manila",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(date);
+  var timePart = new Intl.DateTimeFormat("en-PH", {
+    timeZone: "Asia/Manila",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  }).format(date);
+  return datePart + " · " + timePart;
+}
+
+function formatRelativeTime(timestamp) {
   var date = new Date(timestamp);
-  return date.toLocaleString() + " (" + date.toLocaleTimeString() + ")";
+  if (isNaN(date.getTime())) return "";
+  var now = new Date();
+  var diffMs = now - date;
+  var seconds = Math.round(diffMs / 1000);
+  if (seconds < 60) return "Just now";
+  var minutes = Math.round(seconds / 60);
+  if (minutes < 60) return minutes === 1 ? "1 minute ago" : minutes + " minutes ago";
+  var hours = Math.round(minutes / 60);
+  if (hours < 24) return hours === 1 ? "1 hour ago" : hours + " hours ago";
+  var days = Math.round(hours / 24);
+  if (days === 1) return "Yesterday";
+  if (days < 7) return days + " days ago";
+  return formatManilaDate(date);
+}
+
+function formatTimestamp(timestamp) {
+  return formatManilaDateTime(timestamp);
 }
 
 function renderDocumentTrail(ref) {
@@ -1376,7 +2018,7 @@ var MASTER_NAV = [
   {
     label: "Management",
     items: [
-      { icon: "🔍", text: "Search Documents", page: "search" },
+      { icon: "📂", text: "Documents", page: "search" },
       { icon: "📁", text: "Archive", page: "archive" },
       { icon: "🗑️", text: "Disposal Management", page: "disposal" },
       { icon: "👥", text: "User Management", page: "users" },
@@ -1410,21 +2052,18 @@ function getNav() {
     section.items = section.items.filter(function (item) {
       return features.includes(item.page);
     });
-    // Add badges back if needed
     section.items.forEach(function (item) {
       if (item.page === "incoming") {
-        if (r === "admin") item.badge = 3;
-        if (r === "rd") item.badge = 4;
-        if (r === "ard" || r === "oic") item.badge = 2;
-        if (r === "dc") item.badge = 1;
-        if (r === "staff") item.badge = 2;
+        var incomingUnread = getUnreadIncomingCount();
+        if (incomingUnread > 0) item.badge = incomingUnread;
+      }
+      if (item.page === "outgoing") {
+        var outgoingUnread = getUnreadOutgoingCount();
+        if (outgoingUnread > 0) item.badge = outgoingUnread;
       }
       if (item.page === "notifications") {
-        if (r === "admin") item.badge = 5;
-        if (r === "rd") item.badge = 4;
-        if (r === "ard" || r === "oic") item.badge = 2;
-        if (r === "dc") item.badge = 1;
-        if (r === "staff") item.badge = 2;
+        var unread = getUnreadNotificationCount();
+        if (unread > 0) item.badge = unread;
       }
       // Customize text based on role
       if (item.page === "dashboard" && r === "dc")
@@ -1817,69 +2456,14 @@ function showOICRequestModal(designation) {
 }
 
 function addOICRequestNotification(roleType) {
-  var notifPanel = document.getElementById("notif-panel");
-  if (!notifPanel) return;
-
-  var notifText = "<strong>Chief Reyes</strong> has requested temporary clearance to assume <strong>Acting OIC - " + (roleType === "rd" ? "RD" : "ARD") + "</strong> duty.";
-
-  // Set badge count
-  var badge = document.getElementById("notif-badge");
-  if (badge) {
-    var val = parseInt(badge.textContent || "0") + 1;
-    updateNotificationBadge(val);
-  }
+  // OIC request notifications are not part of the core document/communication notification list.
+  // This function remains for compatibility with the OIC workflow but does not alter the shared panel.
+  return;
 }
 
 function renderOICNotifications() {
-  var notifPanel = document.getElementById("notif-panel");
-  if (!notifPanel) return;
-
-  // Remove existing OIC notifications to prevent duplicates
-  var oicItems = notifPanel.querySelectorAll(".oic-notif-item");
-  oicItems.forEach(function (item) { item.remove(); });
-
-  var notifHead = notifPanel.querySelector(".notif-head");
-  if (!notifHead) return;
-
-  // Check if any Division Chief has a pending OIC request
-  USER_ACCOUNTS.forEach(function (u) {
-    if (u.oicRequest) {
-      // Determine if current user has authorization to approve
-      var canApprove = false;
-      var activeRole = currentUser.role;
-      if (activeRole === "admin") {
-        canApprove = true;
-      } else if (u.oicRequest === "rd" && activeRole === "rd") {
-        canApprove = true;
-      } else if (u.oicRequest === "ard" && (activeRole === "ard" || activeRole === "oic")) {
-        canApprove = true;
-      }
-
-      if (canApprove) {
-        var item = document.createElement("div");
-        item.className = "notif-item unread oic-notif-item";
-        item.style.borderLeft = "4px solid #f59e0b";
-        item.style.background = "#fffbeb";
-        item.style.display = "flex";
-        item.style.padding = "0.75rem 1rem";
-
-        var targetRole = u.oicRequest === "rd" ? "Regional Director (RD)" : "Asst. Regional Director (ARD)";
-
-        item.innerHTML =
-          '<div style="font-size: 18px; margin-right: 0.75rem; margin-top: 2px;">🔑</div>' +
-          '<div style="flex:1">' +
-          '<div class="notif-text" style="font-size: 13px; line-height: 1.4; color: #1e293b;"><strong>OIC Request:</strong> ' + u.name + ' requested temporary clearance to assume <strong>Acting OIC - ' + (u.oicRequest === "rd" ? "RD" : "ARD") + '</strong> duties.</div>' +
-          '<div style="margin-top: 0.6rem; display: flex; gap: 0.5rem;">' +
-          '<button class="btn-sm success" onclick="approveOICRequestDirectly(\'' + u.id + '\')" style="padding: 0.3rem 0.75rem; font-size: 11px; font-weight:600; border-radius:4px; border:none; background:#10b981; color:#fff; cursor:pointer;">Approve</button>' +
-          '<button class="btn-sm danger" onclick="denyOICRequestDirectly(\'' + u.id + '\')" style="padding: 0.3rem 0.75rem; font-size: 11px; font-weight:600; border-radius:4px; border:none; background:#ef4444; color:#fff; cursor:pointer;">Deny</button>' +
-          '</div>' +
-          '<div class="notif-time" style="font-size:10px; color:#94a3b8; margin-top:0.4rem;">Just now</div>' +
-          '</div>';
-
-        notifPanel.insertBefore(item, notifHead.nextSibling);
-      }
-    }
-  });
+  // OIC notification rendering is intentionally disabled for the shared notification panel.
+  return;
 }
 
 function approveOICRequestDirectly(userId) {
@@ -1933,8 +2517,11 @@ function showApp() {
   document.getElementById("sb-name").textContent = u.name;
   document.getElementById("sb-role").textContent =
     u.roleLabel + (u.division ? " — " + u.division.split(" ")[0] : "");
+  loadNotifications();
+  loadDocReadStates();
   renderNav();
   renderRecipientDirectory();
+  renderNotificationPanel();
   showScreen("screen-app");
   showPage("dashboard");
 
@@ -2027,13 +2614,10 @@ function showApp() {
     }
   }
 
-  // Initialize disposal system, expired document notifications, and deadline alerts
+  // Initialize disposal system
   if (["admin", "ard", "rd", "dc", "custodian"].includes(u.role)) {
     initializeDisposalSystem();
-    initializeExpiredDocumentNotifications();
-    updateNotificationPanelWithDeadlines();
   }
-  renderOICNotifications();
 }
 
 function renderRecipientDirectory() {
@@ -2147,10 +2731,10 @@ function showPage(page) {
             : "Incoming Documents",
     "pending-docs": "Pending Documents",
     outgoing: "Outgoing Documents",
-    logbook: "Document Logbook",
+    logbook: "Admin Logbook — Document Intake",
     "document-trail": "Document Trail",
     users: "User Management",
-    search: "Search Documents",
+    search: "Documents",
     archive: "Archive",
     disposal: "Disposal Management",
     notifications: "Notifications",
@@ -2203,26 +2787,176 @@ function renderPageHeader(title) {
 }
 
 function statusPill(s) {
-  if (s === "Archived") return '<span class="pill pill-gray">Archived</span>';
-  if (s === "Approved")
+  if (!s) return '<span class="pill pill-blue">New</span>';
+  if (s === "Archived" || s === "Disposed" || s === "For Disposal Review")
+    return '<span class="pill pill-gray">' + s + "</span>";
+  if (s === "Approved" || s === "Received" || s === "Routed")
     return '<span class="pill pill-green">' + s + "</span>";
   if (s === "Released")
     return '<span class="pill pill-purple">' + s + "</span>";
-  if (s === "For RD Approval" || s === "For ARD Clearance")
+  if (s === "For RD Approval" || s === "For ARD Clearance" || s === "Pending" || s === "In Review")
     return '<span class="pill pill-amber">' + s + "</span>";
-  if (s === "Rejected") return '<span class="pill pill-red">' + s + "</span>";
+  if (s === "Rejected" || s === "Disapproved") return '<span class="pill pill-red">' + s + "</span>";
+  if (s === "New") return '<span class="pill pill-blue">New</span>';
   return '<span class="pill pill-blue">' + s + "</span>";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WORKFLOW STATUS DROPDOWN - REPLACES STATIC STATUS BADGES
+// ═══════════════════════════════════════════════════════════════════════════
+
+function renderStatusDropdown(docRef, currentStatus, isEditable) {
+  // Normalize current status
+  var status = currentStatus || "Sent";
+  
+  console.log('renderStatusDropdown called:', docRef, 'status:', status, 'isEditable:', isEditable);
+  
+  // Workflow status options for recipient
+  var workflowStatuses = [
+    { value: "Sent", label: "Sent" },
+    { value: "Acknowledged", label: "Acknowledged" },
+    { value: "In Progress", label: "In Progress" },
+    { value: "Needs Clarification", label: "Needs Clarification" },
+    { value: "On Hold", label: "On Hold" },
+    { value: "Done", label: "Done" }
+  ];
+  
+  // If not editable, return static display
+  if (!isEditable) {
+    console.log('  → Returning static pill');
+    return statusPill(status);
+  }
+  
+  console.log('  → Returning dropdown');
+  
+  // Build actual HTML select dropdown
+  var html = '<select class="status-dropdown" data-doc-ref="' + escapeHtml(docRef) + '" onchange="handleStatusChange(this)" style="padding:4px 8px;border:1px solid #d0d0d0;border-radius:4px;font-size:12px;background:white;cursor:pointer;min-width:140px">';
+  
+  workflowStatuses.forEach(function(opt) {
+    var selected = (opt.value === status) ? ' selected' : '';
+    html += '<option value="' + escapeHtml(opt.value) + '"' + selected + '>' + escapeHtml(opt.label) + '</option>';
+  });
+  
+  html += '</select>';
+  return html;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CHECK IF CURRENT USER IS RECIPIENT OF DOCUMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+function isCurrentUserRecipient(doc) {
+  if (!doc) return false;
+  
+  console.log('Checking recipient for doc:', doc.ref, 'to:', doc.to, 'currentUser:', currentUser.name, 'role:', currentUser.role);
+  
+  // Check if addressed to current user by exact name
+  if (doc.to && doc.to === currentUser.name) {
+    console.log('  → Match: exact name');
+    return true;
+  }
+  
+  // Check if addressed to RD and current user is RD or admin
+  if (doc.to && (doc.to === 'RD' || doc.to === 'Regional Director')) {
+    if (currentUser.role === 'rd' || currentUser.role === 'admin') {
+      console.log('  → Match: RD/admin recipient');
+      return true;
+    }
+  }
+  
+  // Check if addressed to ARD and current user is ARD or OIC
+  if (doc.to && (doc.to === 'ARD' || doc.to === 'Assistant Regional Director')) {
+    if (currentUser.role === 'ard' || currentUser.role === 'oic') {
+      console.log('  → Match: ARD/OIC recipient');
+      return true;
+    }
+  }
+  
+  // Check if addressed to division chief
+  if (doc.to && (doc.to === 'Division Chief' || doc.to === 'Chief')) {
+    if (currentUser.role === 'dc' && doc.division === currentUser.division) {
+      console.log('  → Match: Division Chief');
+      return true;
+    }
+  }
+  
+  // Check if user is DC or staff in the document's division
+  if (doc.division && doc.division === currentUser.division) {
+    if (currentUser.role === 'dc' || currentUser.role === 'staff') {
+      console.log('  → Match: same division DC/staff');
+      return true;
+    }
+  }
+  
+  console.log('  → No match, not recipient');
+  return false;
+}
+
+function handleStatusChange(selectElement) {
+  var docRef = selectElement.getAttribute('data-doc-ref');
+  var newStatus = selectElement.value;
+  
+  if (!docRef) {
+    console.error('No document reference found');
+    return;
+  }
+  
+  console.log('Status changed:', docRef, '→', newStatus);
+  
+  // Find the document
+  var doc = getDocByRef(docRef);
+  if (!doc) {
+    showError('Document not found: ' + docRef);
+    return;
+  }
+  
+  var oldStatus = doc.status || 'New';
+  
+  // Update document status (CENTRALIZED)
+  doc.status = newStatus;
+  
+  // Add to tracking trail with timestamp
+  if (!doc.tracking) doc.tracking = { trail: [] };
+  if (!doc.tracking.trail) doc.tracking.trail = [];
+  
+  var actionText = "Status changed from " + oldStatus + " to " + newStatus;
+  
+  doc.tracking.trail.push({
+    user: currentUser.name,
+    action: actionText,
+    timestamp: new Date().toISOString(),
+    statusChange: {
+      from: oldStatus,
+      to: newStatus
+    }
+  });
+  
+  doc.tracking.lastUpdated = new Date().toISOString();
+  doc.tracking.lastActor = currentUser.role;
+  
+  // SAVE TO LOCALSTORAGE
+  saveDocuments();
+  
+  // Show success message
+  showSuccess('Document status updated to: ' + newStatus);
+  
+  // Refresh current page to show updated status everywhere
+  if (currentPage === "logbook") {
+    showPage("logbook");
+  } else if (currentPage === "incoming") {
+    showPage("incoming");
+  } else if (currentPage === "outgoing") {
+    showPage("outgoing");
+  } else if (currentPage === "dashboard") {
+    showPage("dashboard");
+  }
+  
+  // Update navigation counts
+  renderNav();
 }
 
 function pad3(n) {
   return String(n).padStart(3, "0");
-}
-
-function formatDateISO(d) {
-  var year = d.getFullYear();
-  var month = String(d.getMonth() + 1).padStart(2, "0");
-  var day = String(d.getDate()).padStart(2, "0");
-  return year + "-" + month + "-" + day;
 }
 
 function registerExistingReferences() {
@@ -2253,6 +2987,26 @@ function getDocByRef(ref) {
   return DOCS.find(function (d) {
     return d.ref === ref;
   });
+}
+
+function getDocumentThread(doc) {
+  if (!doc.communicationThread) {
+    doc.communicationThread = [];
+  }
+  return doc.communicationThread;
+}
+
+function createThreadMessage(type, message) {
+  return {
+    id: "msg-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    senderId: currentUser.email || currentUser.name || currentUser.role,
+    senderName: currentUser.name || "Unknown",
+    senderRole: currentUser.role || "",
+    senderRoleLabel: currentUser.roleLabel || currentUser.role || "",
+    message: message,
+    dateTime: new Date().toISOString(),
+    type: type,
+  };
 }
 
 function isGlobalLogbookRole(role) {
@@ -2442,6 +3196,60 @@ function getVisibleDocumentsForRole() {
   });
 }
 
+function resolveRecipient(label) {
+  if (!label || !label.trim()) return null;
+  var normalized = label.trim().toLowerCase();
+
+  var allUsers = Object.values(USERS).concat(USER_ACCOUNTS.map(function(u) {
+    return {
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      role: u.role,
+      roleLabel: u.roleLabel || u.role,
+      division: u.division,
+    };
+  }));
+
+  for (var i = 0; i < allUsers.length; i++) {
+    var u = allUsers[i];
+    if (!u || !u.name) continue;
+    var name = (u.name || "").toLowerCase();
+    var email = (u.email || "").toLowerCase();
+    var role = (u.role || "").toLowerCase();
+    var roleLabel = (u.roleLabel || u.role || "").toLowerCase();
+    if (normalized === name || normalized === email || normalized === role || normalized === roleLabel) {
+      return u;
+    }
+    if (label.toLowerCase().indexOf(name) !== -1 || label.toLowerCase().indexOf(email) !== -1) {
+      return u;
+    }
+    if (label.toLowerCase().indexOf(role) !== -1 || label.toLowerCase().indexOf(roleLabel) !== -1) {
+      return u;
+    }
+  }
+  return null;
+}
+
+function getRoutingStatusForRecipient(to) {
+  var recipient = resolveRecipient(to);
+  var candidate = (recipient && recipient.role) || to || "";
+  candidate = candidate.toLowerCase();
+  if (candidate.indexOf("rd") !== -1 || candidate.indexOf("regional director") !== -1)
+    return "For RD Approval";
+  if (candidate.indexOf("ard") !== -1 || candidate.indexOf("assistant regional director") !== -1)
+    return "For ARD Clearance";
+  if (candidate.indexOf("division chief") !== -1 || candidate.indexOf("chief") !== -1)
+    return "For Division Clearance";
+  if (candidate.indexOf("custodian") !== -1)
+    return "For ARD Clearance";
+  if (candidate.indexOf("staff") !== -1)
+    return "For Staff Action";
+  if (candidate.indexOf("supervisor") !== -1)
+    return "For Supervisor Review";
+  return "Sent to " + to;
+}
+
 function escapeHtml(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -2561,7 +3369,7 @@ function renderDashboard() {
     '</span>' +
     "</div></div>";
   h +=
-    '<div style="text-align:right"><div style="font-size:13px;color:rgba(255,255,255,.5)">Today</div><div style="font-size:18px;font-weight:600">May 14, 2026</div></div>';
+    '<div style="text-align:right"><div style="font-size:13px;color:rgba(255,255,255,.5)">Today</div><div style="font-size:18px;font-weight:600">' + formatManilaDate(new Date()) + '</div></div>';
   h += "</div>";
 
   h += '<div class="stats-row">';
@@ -2901,11 +3709,12 @@ function renderPendingDocs() {
 function renderIncoming() {
   currentIncomingTab = "all";
   var visibleDocs = getVisibleDocumentsForRole();
-  var incomingDocs = visibleDocs.filter((d) => d.kind === "incoming");
+  var incomingDocs = visibleDocs.filter(function (d) {
+    return isIncomingDocumentForUser(d, currentUser);
+  });
   var h = "";
   h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">';
   h += '<div class="tab-bar" id="in-tabs"><div class="tab active" onclick="setTab(this,\'all\')">All</div><div class="tab" onclick="setTab(this,\'pending\')">Pending</div><div class="tab" onclick="setTab(this,\'approved\')">Approved</div><div class="tab" onclick="setTab(this,\'released\')">Released</div></div>';
-  h += '<button class="btn-sm primary" onclick="openCompose()">+ Send Document</button>';
   h += "</div>";
   h += '<div class="card"><div class="card-head"><div class="card-title">' +
     (currentUser.role === "rd" ? "Pending/For Approval" : ["ard", "oic"].includes(currentUser.role) ? "Pending/For Clearance" : currentUser.role === "dc" ? "For Clearance/Pending" : "Incoming Documents") +
@@ -2918,7 +3727,12 @@ function renderIncoming() {
       var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>' : "";
       var divFull = d.division || "";
       var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
-      h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + flowPill(d.kind) + "</td><td>" + d.type + conf + "</td><td>" + d.from + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + d.date + "</td><td>" + statusPill(d.status) + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
+      
+      // Use centralized recipient check
+      var isRecipient = isCurrentUserRecipient(d);
+      var statusDisplay = renderStatusDropdown(d.ref, d.status, isRecipient);
+      
+      h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + flowPill('incoming') + "</td><td>" + d.type + conf + "</td><td>" + d.from + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + d.date + "</td><td>" + statusDisplay + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
     });
   }
   h += "</tbody></table></div></div>";
@@ -2928,11 +3742,12 @@ function renderIncoming() {
 function renderOutgoing() {
   currentOutgoingTab = "all";
   var visibleDocs = getVisibleDocumentsForRole();
-  var outgoingDocs = visibleDocs.filter((d) => d.kind === "outgoing");
+  var outgoingDocs = visibleDocs.filter(function (d) {
+    return isOutgoingDocumentForUser(d, currentUser);
+  });
   var h = "";
   h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">';
   h += '<div class="tab-bar" id="out-tabs"><div class="tab active" onclick="setTab(this,\'all\')">All</div><div class="tab" onclick="setTab(this,\'pending\')">Pending</div><div class="tab" onclick="setTab(this,\'released\')">Released</div></div>';
-  h += '<button class="btn-sm primary" onclick="openCompose()">+ Send Document</button>';
   h += "</div>";
   h += '<div class="card"><div class="card-head"><div class="card-title">Outgoing Documents</div><div id="outgoing-count" style="font-size:12px;color:var(--muted)">' + outgoingDocs.length + " records</div></div>";
   h += '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference No.</th><th>Direction</th><th>Type</th><th>To</th><th>Division</th><th>Subject</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody id="outgoing-tbody">';
@@ -2943,7 +3758,12 @@ function renderOutgoing() {
       var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>' : "";
       var divFull = d.division || "";
       var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
-      h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + flowPill(d.kind) + "</td><td>" + d.type + conf + "</td><td>" + d.to + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + d.date + "</td><td>" + statusPill(d.status) + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
+      
+      // Use centralized recipient check
+      var isRecipient = isCurrentUserRecipient(d);
+      var statusDisplay = renderStatusDropdown(d.ref, d.status, isRecipient);
+      
+      h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + flowPill('outgoing') + "</td><td>" + d.type + conf + "</td><td>" + d.to + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + d.date + "</td><td>" + statusDisplay + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
     });
   }
   h += "</tbody></table></div></div>";
@@ -3015,9 +3835,9 @@ function renderLogbook() {
   var visibleDocs = getVisibleLogbookDocs();
   h +=
     '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">';
-  h += "<div></div>";
+  h += '<div style="font-size:12px;color:var(--muted)">Initial intake and recording point for documents entering the DRMS. Documents listed here are awaiting classification, processing, or routing.</div>';
   h +=
-    '<div style="display:flex;gap:.5rem"><button class="btn-sm" onclick="openManualLogbook()">✍️ Manual Logbook</button><button class="btn-sm" onclick="window.print()">🖨️ Print</button><button class="btn-sm" onclick="exportLogbookCSV()">⬇️ Export CSV</button></div>';
+    '<div style="display:flex;gap:.5rem"><button class="btn-sm" onclick="openManualLogbook()">✍️ Manual Entry</button><button class="btn-sm" onclick="window.print()">🖨️ Print</button><button class="btn-sm" onclick="exportLogbookCSV()">⬇️ Export CSV</button></div>';
   h += "</div>";
 
   if (isGlobalLogbookRole(currentUser.role) || currentUser.role === "dc") {
@@ -3030,49 +3850,84 @@ function renderLogbook() {
       ". You cannot access other division logbooks.</div>";
     h += renderSimpleLogbookNavigation();
   }
-  h +=
-    '<div class="card"><div style="overflow-x:auto"><table class="doc-table"><thead><tr><th>#</th><th>Reference No.</th><th>Direction</th><th>Date Received</th><th>Last Updated</th><th>Type</th><th>From / Sender</th><th>Division</th><th>Subject</th><th>Routed To</th><th>Status</th><th>Physical Copy</th><th>Actions</th></tr></thead><tbody>';
+  // Admin Logbook: enhanced columns with lifecycle context
+  h += '<div class="card"><div style="overflow-x:auto"><table class="doc-table"><thead><tr>' +
+    '<th>#</th>' +
+    '<th>Reference No.</th>' +
+    '<th>Subject</th>' +
+    '<th>Type</th>' +
+    '<th>Category</th>' +
+    '<th>Confidentiality</th>' +
+    '<th>Priority</th>' +
+    '<th>Uploaded By</th>' +
+    '<th>Date Uploaded</th>' +
+    '<th>Current Handler / Division</th>' +
+    '<th>Status</th>' +
+    '<th>Ver.</th>' +
+    '<th>Actions</th>' +
+    '</tr></thead><tbody>';
   if (visibleDocs.length === 0) {
     h += emptyStateRow(13, "📋", "No logbook entries", "Documents logged in this view will appear here.");
   }
   visibleDocs.forEach(function (d, i) {
-    var lastUpdated =
-      d.tracking && d.tracking.lastUpdated
-        ? formatTimestamp(d.tracking.lastUpdated)
-        : d.date;
     var divFull = d.division || "";
     var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
-    h +=
-      '<tr><td style="color:var(--muted)">' +
-      (i + 1) +
-      '</td><td style="font-family:monospace;font-size:12px">' +
-      d.ref +
-      "</td><td>" +
-      flowPill(d.kind) +
-      "</td><td>" +
-      d.date +
-      "</td><td>" +
-      lastUpdated +
-      "</td><td>" +
-      d.type +
-      "</td><td>" +
-      d.from +
-      "</td><td title=\"" + escapeHtml(divFull) + "\">" +
-      divAbbrev +
-      "</td><td>" +
-      d.subject +
-      "</td><td>" +
-      d.to +
-      "</td><td>" +
-      statusPill(d.status) +
-      "</td><td style=\"text-align:center\">" +
-      (d.physicalCopy ? "✔️" : "—") +
-      "</td><td>" +
-      renderActionsMenu(d.ref, "openLogbookEdit") +
-      "</td></tr>";
+    var isNew = d.status === "New" || (!d.status);
+    var rowStyle = isNew ? ' style="background:#f0f7ff;"' : "";
+    var newBadge = isNew ? ' <span class="pill pill-blue" style="font-size:9px;margin-left:3px">NEW</span>' : "";
+    var conf = d.conf || (d.confidentialityLevel && d.confidentialityLevel !== "Internal" && d.confidentialityLevel !== "Public")
+      ? '<span class="pill pill-red" style="font-size:9px;">Conf.</span>' : "";
+    var ver = d.version ? 'v' + d.version : 'v1';
+    var category = escapeHtml(d.category || d.metadata && d.metadata.category || '—');
+    var confLevel = escapeHtml(d.confidentialityLevel || d.metadata && d.metadata.confidentialityLevel || '—');
+    var priority = escapeHtml(d.priority || d.metadata && d.metadata.priority || '—');
+    var uploadedBy = escapeHtml(d.uploadedBy || d.from || '—');
+    var handler = escapeHtml(d.to || divAbbrev);
+    
+    // Determine if current user is the recipient (can edit status)
+    var isRecipient = (d.to && d.to === currentUser.name) || (d.division && d.division === currentUser.division && (currentUser.role === 'dc' || currentUser.role === 'staff'));
+    var statusDisplay = renderStatusDropdown(d.ref, d.status, isRecipient);
+    
+    h += '<tr' + rowStyle + '>' +
+      '<td style="color:var(--muted)">' + (i + 1) + '</td>' +
+      '<td style="font-family:monospace;font-size:12px;font-weight:600">' + escapeHtml(d.ref) + newBadge + '</td>' +
+      '<td>' + escapeHtml(d.subject) + '</td>' +
+      '<td>' + escapeHtml(d.type || '—') + conf + '</td>' +
+      '<td>' + category + '</td>' +
+      '<td>' + confLevel + '</td>' +
+      '<td>' + priority + '</td>' +
+      '<td>' + uploadedBy + '</td>' +
+      '<td>' + escapeHtml(d.date || '—') + '</td>' +
+      '<td title="' + escapeHtml(divFull) + '">' + handler + '</td>' +
+      '<td>' + statusDisplay + '</td>' +
+      '<td style="font-weight:700;color:var(--navy3);font-size:12px">' + ver + '</td>' +
+      '<td>' + renderLogbookActionsMenu(d.ref) + '</td>' +
+      '</tr>';
   });
   h += "</tbody></table></div></div>";
   return h;
+}
+
+function renderLogbookActionsMenu(ref) {
+  return '<select class="btn-sm primary" onchange="handleLogbookAction(this,\'' + ref + '\')">' +
+    '<option value="" disabled selected hidden>Options</option>' +
+    '<option value="view">View</option>' +
+    '<option value="metadata">View Metadata</option>' +
+    '<option value="send">Send Document</option>' +
+    '<option value="edit">Edit Entry</option>' +
+    '<option value="delete">Delete</option>' +
+    '</select>';
+}
+
+function handleLogbookAction(el, ref) {
+  var action = el.value;
+  el.value = "";
+  if (!action) return;
+  if (action === "view") { viewDoc(ref); return; }
+  if (action === "metadata") { showMetadataModal(ref); return; }
+  if (action === "send") { openComposeWithDoc(ref); return; }
+  if (action === "edit") { openLogbookEdit(ref); return; }
+  if (action === "delete") { deleteLogbookEntry(ref); return; }
 }
 
 function renderSimpleLogbookNavigation() {
@@ -3433,98 +4288,22 @@ function renderSettings() {
 
 function renderNotifications() {
   var h =
-    '<div class="card"><div class="card-head"><div class="card-title">All Notifications</div><button class="btn-sm" onclick="">Mark all as read</button></div>';
-  var notifs = [
-    {
-      icon: "📥",
-      text: "Document 2026-04-180 received and logged.",
-      time: "Just now",
-      read: false,
-    },
-    {
-      icon: "⏳",
-      text: "Document 2026-04-163 is awaiting ARD clearance.",
-      time: "2 hours ago",
-      read: false,
-    },
-    {
-      icon: "⚠️",
-      text: "DEADLINE ALERT: Document 2026-04-118 is due in 2 days.",
-      time: "3 hours ago",
-      read: false,
-    },
-    {
-      icon: "✅",
-      text: "Document 2026-04-155 approved by RD.",
-      time: "Yesterday",
-      read: true,
-    },
-    {
-      icon: "📤",
-      text: "Document 2026-04-140 has been released.",
-      time: "Yesterday",
-      read: true,
-    },
-    {
-      icon: "👤",
-      text: "New user account (Staff Ana) registered — pending activation.",
-      time: "2 days ago",
-      read: true,
-    },
-    {
-      icon: "📋",
-      text: "Monthly logbook report for March 2026 generated.",
-      time: "3 days ago",
-      read: true,
-    },
-  ];
-
-  // Add expired document notifications for admin, ARD, RD, and Custodian roles
-  if (["admin", "ard", "rd", "custodian"].includes(currentUser.role)) {
-    var expiredDocStatus = checkExpiredDocuments();
-
-    // Add expired documents
-    expiredDocStatus.expired.forEach(function (doc) {
-      notifs.unshift({
-        icon: "🚨",
-        text: `Document <strong>${doc.ref}</strong> has EXPIRED and needs immediate disposal`,
-        time: "Just now",
-        read: false,
-      });
-    });
-
-    // Add near-expiry documents
-    expiredDocStatus.nearExpiry.forEach(function (doc) {
-      notifs.unshift({
-        icon: "⚠️",
-        text: `Document <strong>${doc.ref}</strong> expires in ${doc.daysUntilDisposal} days and needs disposal`,
-        time: "Just now",
-        read: false,
-      });
-    });
-  }
-  notifs.forEach(function (n) {
-    h +=
-      '<div style="display:flex;align-items:flex-start;gap:.85rem;padding:.85rem 0;border-bottom:1px solid var(--border);' +
-      (n.read ? "opacity:.65" : "") +
-      '">';
-    h +=
-      '<div style="width:36px;height:36px;border-radius:50%;background:var(--pill);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">' +
-      n.icon +
-      "</div>";
-    h +=
-      '<div style="flex:1"><div style="font-size:13px;line-height:1.5">' +
-      n.text +
-      '</div><div style="font-size:11px;color:var(--muted);margin-top:3px">' +
-      n.time +
-      "</div></div>";
-    if (!n.read)
-      h +=
-        '<div style="width:8px;height:8px;border-radius:50%;background:var(--navy3);margin-top:6px;flex-shrink:0"></div>';
-    h += "</div>";
-  });
+    '<div class="card"><div class="card-head"><div class="card-title">All Notifications</div><button class="btn-sm" onclick="markAllNotificationsRead()">Mark all as read</button></div>';
+  h += renderNotificationsPageHtml();
   h += "</div>";
   return h;
+}
+
+function renderNotificationsPageHtml() {
+  var notifs = getNotificationsForCurrentUser();
+  if (!notifs.length) {
+    return '<div style="padding:1.5rem;color:var(--muted);font-size:13px">No new notifications.</div>';
+  }
+  var html = "";
+  notifs.forEach(function (n) {
+    html += renderNotificationItemHtml(n);
+  });
+  return html;
 }
 
 function renderUsers() {
@@ -3720,6 +4499,7 @@ var USER_ACCOUNTS = [
       "incoming",
       "outgoing",
       "pending-docs","logbook",
+      "search",
       "users",
       "notifications",
       "announcements",
@@ -3764,6 +4544,7 @@ var USER_ACCOUNTS = [
       "incoming",
       "outgoing",
       "pending-docs","logbook",
+      "search",
       "notifications",
       "announcements",
       "enhanced-reports",
@@ -3817,6 +4598,7 @@ function getFeaturesForRole(role) {
       "incoming",
       "outgoing",
       "pending-docs","logbook",
+      "search",
       "users",
       "notifications",
       "announcements",
@@ -3840,6 +4622,7 @@ function getFeaturesForRole(role) {
     "incoming",
     "outgoing",
       "pending-docs","logbook",
+    "search",
     "notifications",
     "announcements",
     "enhanced-reports",
@@ -4702,27 +5485,30 @@ function saveAccountSettings() {
 function renderSearch() {
   var visibleDocs = getVisibleDocumentsForRole();
 
-  // Collect unique types and divisions from visible docs
+  // Collect unique types, categories and divisions
   var types = ["All types"];
+  var categories = ["All categories"];
   var divisions = ["All divisions"];
   visibleDocs.forEach(function (d) {
     if (d.type && !types.includes(d.type)) types.push(d.type);
+    var cat = d.category || (d.metadata && d.metadata.category);
+    if (cat && !categories.includes(cat)) categories.push(cat);
     if (d.division && !divisions.includes(d.division)) divisions.push(d.division);
   });
-  types.sort();
-  divisions.sort();
+  types.sort(); categories.sort(); divisions.sort();
 
   var typeOptions = types.map(function (t) {
     return '<option value="' + escapeHtml(t) + '">' + escapeHtml(t) + '</option>';
   }).join("");
 
+  var categoryOptions = categories.map(function (c) {
+    return '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>';
+  }).join("");
+
   var statusOptions = [
-    "All statuses",
-    "For ARD Clearance",
-    "For RD Approval",
-    "Approved",
-    "Released",
-    "Archived",
+    "All statuses", "New", "Pending", "In Review", "Routed", "Received",
+    "For ARD Clearance", "For RD Approval", "Approved", "Released",
+    "Archived", "For Disposal Review", "Disposed",
   ].map(function (s) {
     return '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>';
   }).join("");
@@ -4733,37 +5519,49 @@ function renderSearch() {
 
   var inputStyle = 'style="width:100%;padding:.5rem .85rem;border:1.5px solid var(--border);border-radius:8px;font-size:13px;outline:none;background:#fff;"';
 
-  var h = '<div class="card mb15">';
-  h += '<div class="card-title" style="margin-bottom:1rem">Search Documents</div>';
+  // ── Lifecycle banner ──────────────────────────────────────────────────────
+  var h = '<div style="background:linear-gradient(110deg,var(--navy) 0%,var(--navy3) 100%);border-radius:12px;padding:1rem 1.5rem;color:#fff;margin-bottom:1.25rem;display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap;">';
+  h += '<div style="flex:1;min-width:200px">';
+  h += '<div style="font-size:11px;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.25rem">Documents</div>';
+  h += '<div style="font-size:16px;font-weight:700">Central Source of Truth</div>';
+  h += '<div style="font-size:12px;color:rgba(255,255,255,.7);margin-top:.2rem">All documents that have been uploaded and recorded in the DRMS are available here.</div>';
+  h += '</div>';
+  h += '</div>';
+
+  // ── Filters ───────────────────────────────────────────────────────────────
+  h += '<div class="card mb15">';
+  h += '<div class="card-title" style="margin-bottom:1rem">Search &amp; Filter</div>';
   h += '<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:.75rem;margin-bottom:.75rem">';
   h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Keyword / Reference No.</label>';
-  h += '<input id="search-keyword" ' + inputStyle + ' placeholder="e.g. 2026-04, memorandum, promotion..." oninput="executeSearch()" /></div>';
+  h += '<input id="search-keyword" ' + inputStyle + ' placeholder="e.g. DEP-2026, memorandum, promotion…" oninput="executeSearch()" /></div>';
   h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Document Type</label>';
   h += '<select id="search-type" ' + inputStyle + ' onchange="executeSearch()">' + typeOptions + '</select></div>';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Category</label>';
+  h += '<select id="search-category" ' + inputStyle + ' onchange="executeSearch()">' + categoryOptions + '</select></div>';
+  h += '</div>';
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:.75rem;margin-bottom:.75rem">';
   h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Status</label>';
   h += '<select id="search-status" ' + inputStyle + ' onchange="executeSearch()">' + statusOptions + '</select></div>';
-  h += '</div>';
-  h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem;margin-bottom:.75rem">';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Division</label>';
+  h += '<select id="search-division" ' + inputStyle + ' onchange="executeSearch()">' + divisionOptions + '</select></div>';
   h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Direction</label>';
   h += '<select id="search-kind" ' + inputStyle + ' onchange="executeSearch()">';
   h += '<option value="">All directions</option><option value="incoming">Incoming</option><option value="outgoing">Outgoing</option>';
   h += '</select></div>';
-  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Division</label>';
-  h += '<select id="search-division" ' + inputStyle + ' onchange="executeSearch()">' + divisionOptions + '</select></div>';
   h += '<div style="display:flex;align-items:flex-end;gap:.5rem">';
   h += '<button class="btn-sm primary" onclick="executeSearch()" style="padding:.5rem 1.25rem;height:34px">🔍 Search</button>';
   h += '<button class="btn-sm" onclick="clearSearch()" style="padding:.5rem 1rem;height:34px">✕ Clear</button>';
   h += '</div></div></div>';
 
-  // Results card — pre-populate with all visible docs
+  // ── Results ────────────────────────────────────────────────────────────────
   h += '<div class="card">';
   h += '<div class="card-head">';
-  h += '<div class="card-title">Results</div>';
+  h += '<div class="card-title">Repository</div>';
   h += '<div id="search-count" style="font-size:12px;color:var(--muted)">' + visibleDocs.length + ' documents</div>';
   h += '</div>';
   h += '<div class="doc-table-wrap">';
   h += '<table class="doc-table"><thead><tr>';
-  h += '<th>Reference No.</th><th>Direction</th><th>Type</th><th>From</th><th>To</th><th>Division</th><th>Subject</th><th>Date</th><th>Status</th><th>Actions</th>';
+  h += '<th>Reference No.</th><th>Subject</th><th>Type</th><th>Category</th><th>Division</th><th>Status</th><th>Ver.</th><th>Date</th><th>Actions</th>';
   h += '</tr></thead>';
   h += '<tbody id="search-results-tbody">';
   h += buildSearchRows(visibleDocs);
@@ -4774,7 +5572,7 @@ function renderSearch() {
 
 function buildSearchRows(docs) {
   if (docs.length === 0) {
-    return '<tr><td colspan="10" style="text-align:center;padding:3rem;color:var(--muted);">' +
+    return '<tr><td colspan="9" style="text-align:center;padding:3rem;color:var(--muted);">' +
       '<div style="font-size:2rem;margin-bottom:.5rem">🔍</div>' +
       '<div style="font-weight:600;margin-bottom:.25rem">No documents found</div>' +
       '<div style="font-size:12px">Try adjusting your search filters</div>' +
@@ -4783,25 +5581,52 @@ function buildSearchRows(docs) {
   return docs.map(function (d) {
     var divFull = d.division || "";
     var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
-    var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px;font-size:9px">Conf.</span>' : "";
+    var conf = (d.conf || (d.confidentialityLevel && d.confidentialityLevel !== "Internal" && d.confidentialityLevel !== "Public"))
+      ? '<span class="pill pill-red" style="margin-left:4px;font-size:9px">Conf.</span>' : "";
+    var ver = d.version ? 'v' + d.version : 'v1';
+    var category = escapeHtml(d.category || (d.metadata && d.metadata.category) || '—');
     return '<tr>' +
       '<td style="font-family:monospace;font-size:12px;font-weight:600">' + escapeHtml(d.ref || "") + '</td>' +
-      '<td>' + flowPill(d.kind || "incoming") + '</td>' +
-      '<td>' + escapeHtml(d.type || "—") + conf + '</td>' +
-      '<td>' + escapeHtml(d.from || "—") + '</td>' +
-      '<td>' + escapeHtml(d.to || "—") + '</td>' +
-      '<td title="' + escapeHtml(divFull) + '">' + escapeHtml(divAbbrev) + '</td>' +
       '<td>' + escapeHtml(d.subject || "—") + '</td>' +
-      '<td style="white-space:nowrap">' + escapeHtml(d.date || "—") + '</td>' +
+      '<td>' + escapeHtml(d.type || "—") + conf + '</td>' +
+      '<td>' + category + '</td>' +
+      '<td title="' + escapeHtml(divFull) + '">' + escapeHtml(divAbbrev) + '</td>' +
       '<td>' + statusPill(d.status || "") + '</td>' +
-      '<td><button class="btn-sm" onclick="viewDoc(\'' + escapeHtml(d.ref || "") + '\')">View</button></td>' +
+      '<td style="font-weight:700;color:var(--navy3);font-size:12px">' + ver + '</td>' +
+      '<td style="white-space:nowrap">' + escapeHtml(d.date || "—") + '</td>' +
+      '<td>' + renderRepositoryActionsMenu(d.ref) + '</td>' +
       '</tr>';
   }).join("");
+}
+
+function renderRepositoryActionsMenu(ref) {
+  return '<select class="btn-sm primary" onchange="handleRepositoryAction(this,\'' + ref + '\')">' +
+    '<option value="" disabled selected hidden>Actions</option>' +
+    '<option value="view">View</option>' +
+    '<option value="download">Download</option>' +
+    '<option value="metadata">View Metadata</option>' +
+    '<option value="versions">Version History</option>' +
+    '<option value="newversion">Upload New Version</option>' +
+    '<option value="send">Select for Routing</option>' +
+    '</select>';
+}
+
+function handleRepositoryAction(el, ref) {
+  var action = el.value;
+  el.value = "";
+  if (!action) return;
+  if (action === "view") { viewDoc(ref); return; }
+  if (action === "download") { downloadDocument(ref); return; }
+  if (action === "metadata") { showMetadataModal(ref); return; }
+  if (action === "versions") { showVersionHistory(ref); return; }
+  if (action === "newversion") { openUploadVersionModal(ref); return; }
+  if (action === "send") { openComposeWithDoc(ref); return; }
 }
 
 function executeSearch() {
   var keyword = ((document.getElementById("search-keyword") || {}).value || "").trim().toLowerCase();
   var type = ((document.getElementById("search-type") || {}).value || "").trim();
+  var category = ((document.getElementById("search-category") || {}).value || "").trim();
   var status = ((document.getElementById("search-status") || {}).value || "").trim();
   var kind = ((document.getElementById("search-kind") || {}).value || "").trim();
   var division = ((document.getElementById("search-division") || {}).value || "").trim();
@@ -4809,21 +5634,20 @@ function executeSearch() {
   var visibleDocs = getVisibleDocumentsForRole();
 
   var results = visibleDocs.filter(function (d) {
-    // Keyword — match ref, subject, from, to
     if (keyword) {
-      var haystack = [d.ref, d.subject, d.from, d.to, d.type, d.division]
+      var docCategory = d.category || (d.metadata && d.metadata.category) || "";
+      var haystack = [d.ref, d.subject, d.from, d.to, d.type, d.division, docCategory]
         .join(" ").toLowerCase();
       if (haystack.indexOf(keyword) === -1) return false;
     }
-    // Type
     if (type && type !== "All types" && d.type !== type) return false;
-    // Status
+    if (category && category !== "All categories") {
+      var docCat = d.category || (d.metadata && d.metadata.category) || "";
+      if (docCat !== category) return false;
+    }
     if (status && status !== "All statuses" && d.status !== status) return false;
-    // Direction
     if (kind && d.kind !== kind) return false;
-    // Division
     if (division && division !== "All divisions" && (d.division || "") !== division) return false;
-
     return true;
   });
 
@@ -4837,7 +5661,7 @@ function executeSearch() {
 }
 
 function clearSearch() {
-  var fields = ["search-keyword", "search-type", "search-status", "search-kind", "search-division"];
+  var fields = ["search-keyword", "search-type", "search-category", "search-status", "search-kind", "search-division"];
   fields.forEach(function (id) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -4845,6 +5669,115 @@ function clearSearch() {
     else el.selectedIndex = 0;
   });
   executeSearch();
+}
+
+function executeArchiveSearch() {
+  // Get archived documents
+  var archivedDocs = DOCS.filter(function (d) { return d.status === "Archived"; });
+  
+  // Get search criteria
+  var keyword = (document.getElementById("archive-search-keyword") || {}).value || "";
+  var type = (document.getElementById("archive-search-type") || {}).value || "";
+  var category = (document.getElementById("archive-search-category") || {}).value || "";
+  var status = (document.getElementById("archive-search-status") || {}).value || "";
+  var division = (document.getElementById("archive-search-division") || {}).value || "";
+  var date = (document.getElementById("archive-search-date") || {}).value || "";
+  
+  // Check if any filters are active
+  var hasActiveFilters = keyword || type || category || status || division || date;
+  
+  // Apply filters
+  var results = archivedDocs.filter(function (d) {
+    // Keyword filter (search in ref, subject, description)
+    if (keyword) {
+      var kw = keyword.toLowerCase();
+      var matchesKeyword = (d.ref || "").toLowerCase().includes(kw) ||
+                          (d.subject || "").toLowerCase().includes(kw) ||
+                          (d.description || "").toLowerCase().includes(kw);
+      if (!matchesKeyword) return false;
+    }
+    
+    // Type filter
+    if (type && d.type !== type) return false;
+    
+    // Category filter
+    if (category && d.category !== category) return false;
+    
+    // Status filter
+    if (status && d.status !== status) return false;
+    
+    // Division filter
+    if (division && (d.division || "") !== division) return false;
+    
+    // Date filter (match documents on or after the specified date)
+    if (date && d.date && d.date < date) return false;
+    
+    return true;
+  });
+  
+  // Display results count
+  var countEl = document.getElementById("archive-search-results-count");
+  if (countEl) {
+    if (hasActiveFilters) {
+      countEl.textContent = results.length + " document" + (results.length !== 1 ? "s" : "") + " found";
+      countEl.style.display = "block";
+    } else {
+      countEl.textContent = "";
+      countEl.style.display = "none";
+    }
+  }
+  
+  // Display results table if filters are active
+  var resultsContainer = document.getElementById("archive-search-results");
+  if (resultsContainer) {
+    if (hasActiveFilters) {
+      var h = '<div class="card mb15">';
+      h += '<div class="card-head">';
+      h += '<div class="card-title">Search Results</div>';
+      h += '<div style="font-size:12px;color:var(--muted)">' + results.length + ' document' + (results.length !== 1 ? 's' : '') + '</div>';
+      h += '</div>';
+      
+      if (results.length === 0) {
+        h += '<div style="padding:2rem;text-align:center;color:var(--muted)">';
+        h += '<div style="font-size:32px;margin-bottom:1rem">📭</div>';
+        h += '<div>No archived documents match your search criteria.</div>';
+        h += '</div>';
+      } else {
+        h += '<div class="doc-table-wrap"><table class="doc-table">';
+        h += '<thead><tr><th>Reference</th><th>Subject</th><th>Type</th><th>Category</th><th>Division</th><th>Archive Date</th><th>Actions</th></tr></thead>';
+        h += '<tbody>';
+        results.forEach(function (d) {
+          h += '<tr>';
+          h += '<td style="font-family:monospace;font-weight:600">' + escapeHtml(d.ref || "—") + '</td>';
+          h += '<td>' + escapeHtml(d.subject || "—") + '</td>';
+          h += '<td>' + escapeHtml(d.type || "—") + '</td>';
+          h += '<td>' + escapeHtml(d.category || "—") + '</td>';
+          h += '<td>' + escapeHtml(getDivisionAbbrev(d.division) || "—") + '</td>';
+          h += '<td>' + escapeHtml(d.date || "—") + '</td>';
+          h += '<td>' + renderArchiveActionsMenu(d.ref, "search") + '</td>';
+          h += '</tr>';
+        });
+        h += '</tbody></table></div>';
+      }
+      h += '</div>';
+      resultsContainer.innerHTML = h;
+      resultsContainer.style.display = "block";
+    } else {
+      resultsContainer.innerHTML = "";
+      resultsContainer.style.display = "none";
+    }
+  }
+}
+
+function clearArchiveSearch() {
+  var fields = ["archive-search-keyword", "archive-search-type", "archive-search-category", "archive-search-status", "archive-search-division", "archive-search-date"];
+  fields.forEach(function (id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (el.tagName === "INPUT") el.value = "";
+    else el.selectedIndex = 0;
+  });
+  executeArchiveSearch();
 }
 
 function renderReports() {
@@ -5252,6 +6185,64 @@ function renderArchive() {
 
   var h = "";
 
+  // ── Archive Search Banner ──────────────────────────────────────────────────
+  var types = ["Memorandum", "Letter", "Report", "Contract", "Resolution", "Ordinance", "Executive Order", "Policy", "Notice", "Endorsement"];
+  var categories = ["Administrative", "Financial", "HR/Personnel", "Legal", "Operations", "Technical"];
+  var statuses = ["Archived", "Released"];
+  var divisions = ["Office of the Regional Director", "Administrative and Finance Division", "Technical Services Division", "Planning and Management Division"];
+
+  var typeOptions = '<option value="">All Types</option>' + types.map(function (t) {
+    return '<option value="' + escapeHtml(t) + '">' + escapeHtml(t) + '</option>';
+  }).join("");
+
+  var categoryOptions = '<option value="">All Categories</option>' + categories.map(function (c) {
+    return '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>';
+  }).join("");
+
+  var statusOptions = '<option value="">All Status</option>' + statuses.map(function (s) {
+    return '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>';
+  }).join("");
+
+  var divisionOptions = '<option value="">All Divisions</option>' + divisions.map(function (d) {
+    return '<option value="' + escapeHtml(d) + '">' + escapeHtml(d) + '</option>';
+  }).join("");
+
+  var inputStyle = 'style="width:100%;padding:.5rem .85rem;border:1.5px solid var(--border);border-radius:8px;font-size:13px;outline:none;background:#fff;"';
+
+  h += '<div style="background:linear-gradient(110deg,var(--navy) 0%,var(--navy3) 100%);border-radius:12px;padding:1rem 1.5rem;color:#fff;margin-bottom:1.25rem;">';
+  h += '<div style="font-size:11px;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.25rem">Archive</div>';
+  h += '<div style="font-size:16px;font-weight:700">Archived Documents</div>';
+  h += '<div style="font-size:12px;color:rgba(255,255,255,.7);margin-top:.2rem">Search and manage archived documents.</div>';
+  h += '</div>';
+
+  // ── Archive Search Filters ──────────────────────────────────────────────────
+  h += '<div class="card mb15">';
+  h += '<div class="card-title" style="margin-bottom:1rem">Search Archived Documents</div>';
+  h += '<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:.75rem;margin-bottom:.75rem">';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Keyword / Reference No.</label>';
+  h += '<input id="archive-search-keyword" ' + inputStyle + ' placeholder="Search by reference, subject, or keyword…" oninput="executeArchiveSearch()" /></div>';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Document Type</label>';
+  h += '<select id="archive-search-type" ' + inputStyle + ' onchange="executeArchiveSearch()">' + typeOptions + '</select></div>';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Category</label>';
+  h += '<select id="archive-search-category" ' + inputStyle + ' onchange="executeArchiveSearch()">' + categoryOptions + '</select></div>';
+  h += '</div>';
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:.75rem;margin-bottom:.75rem">';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Status</label>';
+  h += '<select id="archive-search-status" ' + inputStyle + ' onchange="executeArchiveSearch()">' + statusOptions + '</select></div>';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Division</label>';
+  h += '<select id="archive-search-division" ' + inputStyle + ' onchange="executeArchiveSearch()">' + divisionOptions + '</select></div>';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Date Range</label>';
+  h += '<input type="date" id="archive-search-date" ' + inputStyle + ' onchange="executeArchiveSearch()" /></div>';
+  h += '<div style="display:flex;align-items:flex-end;gap:.5rem">';
+  h += '<button class="btn-sm primary" onclick="executeArchiveSearch()" style="padding:.5rem 1.25rem;height:34px">🔍 Search</button>';
+  h += '<button class="btn-sm" onclick="clearArchiveSearch()" style="padding:.5rem 1rem;height:34px">✕ Clear</button>';
+  h += '</div></div>';
+  h += '<div id="archive-search-results-count" style="font-size:12px;color:var(--muted);margin-top:0.75rem"></div>';
+  h += '</div>';
+
+  // Archive Search Results (initially hidden, shown when search is active)
+  h += '<div id="archive-search-results" style="display:none;"></div>';
+
   // Archive Folders Section
   h +=
     '<div class="card mb15"><div class="card-head"><div class="card-title">Archive Folders</div>';
@@ -5429,7 +6420,7 @@ function getPageDisplayName(page) {
     outgoing: "Outgoing Documents",
     "pending-docs": "Pending Documents",
     logbook: "Document Logbook",
-    search: "Search Documents",
+    search: "Documents",
     archive: "Archive",
     disposal: "Disposal Management",
     users: "User Management",
@@ -5475,122 +6466,436 @@ function viewDoc(ref) {
     previousLogbookContext = null;
   }
 
+  markDocumentReadForCurrentUser(ref);
+
   var c = document.getElementById("main-content");
 
-  // ── Header ──────────────────────────────────────────────────────────────
-  var html = '<button class="btn-sm" onclick="goBackFromDocView()" style="margin-bottom:1rem">← Back to ' + getPageDisplayName(previousPage) + '</button>';
-  html += '<div class="doc-view-card">';
-
-  // Title row
-  html += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem">';
-  html += '<div>';
-  html += '<div style="font-family:monospace;font-size:18px;font-weight:700;color:var(--navy)">' + escapeHtml(d.ref) + '</div>';
-  html += '<div style="font-size:13px;color:var(--muted);margin-top:2px">' + escapeHtml(d.type || "—");
-  if (d.conf) html += ' · <span class="pill pill-red">CONFIDENTIAL</span>';
-  html += '</div></div>';
-  html += statusPill(d.status || "");
-  html += '</div>';
-
-  // ── Meta grid ────────────────────────────────────────────────────────────
-  html += '<div style="border-top:1px solid var(--border);padding-top:1rem;margin-top:1rem">';
-  html += '<div class="doc-meta-grid">';
-  html += '<div class="meta-item"><label>Subject</label><span>' + escapeHtml(d.subject || "—") + '</span></div>';
-  html += '<div class="meta-item"><label>From</label><span>' + escapeHtml(d.from || "—") + '</span></div>';
-  html += '<div class="meta-item"><label>To / Routed To</label><span>' + escapeHtml(d.to || "—") + '</span></div>';
-  html += '<div class="meta-item"><label>Date Received</label><span>' + escapeHtml(d.date || "—") + '</span></div>';
-  html += '<div class="meta-item"><label>Direction</label><span style="text-transform:capitalize">' + escapeHtml(d.kind || "—") + '</span></div>';
-  html += '<div class="meta-item"><label>Division</label><span>' + escapeHtml(d.division || "ORD") + '</span></div>';
-  html += '<div class="meta-item"><label>Physical Copy</label><span>' + (d.physicalCopy ? "Yes" : "No") + '</span></div>';
-  if (d.disposalDate) {
-    html += '<div class="meta-item"><label>Disposal Date</label><span>' + escapeHtml(d.disposalDate) + '</span></div>';
-  }
-  html += '</div></div>';
-
-  // ── Routing / Tracking Trail ─────────────────────────────────────────────
-  html += '<div style="border-top:1px solid var(--border);padding-top:1rem;margin-top:1rem">';
-  html += '<div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:.75rem">Routing History</div>';
-  html += '<div class="timeline">';
-
-  var trail = d.tracking && d.tracking.trail;
-
-  if (trail && trail.length > 0) {
-    // Render from actual trail data
-    trail.forEach(function (entry, idx) {
-      var isLast = idx === trail.length - 1;
-      var ts = entry.timestamp ? formatTrailTimestamp(entry.timestamp) : "—";
-      var actionIcon = getTrailActionIcon(entry.action);
-      html += tlItem(true, actionIcon + ' <strong>' + escapeHtml(entry.user) + '</strong> — ' + escapeHtml(entry.action), ts);
-    });
-
-    // If document is not yet at a terminal state, show the next pending step
-    var pendingStep = getNextPendingStep(d.status);
-    if (pendingStep) {
-      html += tlItem(false, pendingStep, 'Pending');
+  // ── Local Document Preview Interface (NO EXTERNAL VIEWERS) ────────────────
+  var html = '<div style="background:#e8eaed;min-height:100vh;margin:-1.5rem;padding:1rem">';
+  html += '<button class="btn-sm" onclick="goBackFromDocView()" style="margin-bottom:1rem;background:white">← Back to ' + getPageDisplayName(previousPage) + '</button>';
+  
+  // Check if document has attachments to preview
+  if (d.attachments && d.attachments.length > 0) {
+    var firstAttachment = d.attachments[0];
+    var fileName = firstAttachment.name || 'document';
+    var fileUrl = firstAttachment.url;
+    var fileExt = fileName.split('.').pop().toLowerCase();
+    
+    // Document viewer container with unique ID for dynamic rendering
+    var viewerId = 'doc-viewer-' + ref.replace(/[^a-zA-Z0-9]/g, '');
+    html += '<div id="' + viewerId + '" style="max-width:1200px;margin:0 auto;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.12),0 1px 2px rgba(0,0,0,0.24);border-radius:8px;overflow:hidden;min-height:800px">';
+    
+    if (['pdf'].includes(fileExt)) {
+      // PDF - Will render with PDF.js
+      html += '<div id="pdf-container-' + viewerId + '" style="width:100%;min-height:800px;background:#525659;overflow:auto;padding:1rem"></div>';
+      html += '<div id="pdf-loading-' + viewerId + '" style="padding:4rem;text-align:center;color:#5f6368">';
+      html += '<div style="font-size:48px;margin-bottom:1rem">📄</div>';
+      html += '<div>Loading PDF document...</div>';
+      html += '</div>';
+      
+    } else if (['docx'].includes(fileExt)) {
+      // DOCX - Will render with Mammoth.js
+      html += '<div id="docx-container-' + viewerId + '" style="width:100%;min-height:800px;padding:3rem;overflow:auto;background:white"></div>';
+      html += '<div id="docx-loading-' + viewerId + '" style="padding:4rem;text-align:center;color:#5f6368">';
+      html += '<div style="font-size:48px;margin-bottom:1rem">📄</div>';
+      html += '<div>Loading Word document...</div>';
+      html += '</div>';
+      
+    } else if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'].includes(fileExt)) {
+      // Images - Direct rendering
+      html += '<div style="width:100%;min-height:600px;background:#f8f9fa;padding:2rem;text-align:center;overflow:auto">';
+      html += '<img src="' + escapeHtml(fileUrl) + '" alt="' + escapeHtml(fileName) + '" style="max-width:100%;height:auto;box-shadow:0 2px 8px rgba(0,0,0,0.15)" />';
+      html += '</div>';
+      
+    } else if (['txt', 'log', 'md', 'csv'].includes(fileExt)) {
+      // Text files - Will load and display
+      html += '<div id="text-container-' + viewerId + '" style="width:100%;min-height:800px;padding:2rem;overflow:auto;background:white;font-family:monospace;white-space:pre-wrap;font-size:13px;line-height:1.6"></div>';
+      html += '<div id="text-loading-' + viewerId + '" style="padding:4rem;text-align:center;color:#5f6368">Loading text file...</div>';
+      
+    } else {
+      // Unsupported file type
+      html += '<div style="padding:4rem;text-align:center">';
+      html += '<div style="font-size:64px;margin-bottom:1.5rem;color:#5f6368">📄</div>';
+      html += '<div style="font-size:18px;font-weight:500;color:#202124;margin-bottom:1rem">' + escapeHtml(fileName) + '</div>';
+      html += '<div style="font-size:14px;color:#5f6368">Preview is not available for this file type.</div>';
+      html += '</div>';
     }
+    
+    html += '</div>'; // end viewer container
+    
   } else {
-    // No trail data — generate a minimal trail from the document's own data
-    var syntheticTrail = buildSyntheticTrail(d);
-    syntheticTrail.forEach(function (entry) {
-      html += tlItem(entry.done, entry.label, entry.time);
-    });
+    // No attachments
+    html += '<div style="max-width:1200px;margin:0 auto;padding:4rem;text-align:center;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.12);border-radius:8px;min-height:400px">';
+    html += '<div style="font-size:72px;margin-bottom:1rem;opacity:0.3;color:#5f6368">📄</div>';
+    html += '<div style="font-size:16px;color:#5f6368">No document file attached</div>';
+    html += '</div>';
   }
 
-  html += '</div></div>';
-
-  // ── Action buttons ───────────────────────────────────────────────────────
-  html += '<div style="display:flex;gap:.5rem;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:1rem;margin-top:1rem">';
-
-  var canESign = false;
-  var canApprove = false;
-  var canClear = false;
-  var canRelease = false;
-
-  if (d.status === "Approved") {
-    canRelease = currentUser.role === "admin";
-  } else if (d.status === "For RD Approval") {
-    canESign = canApprove = (["rd", "admin"].includes(currentUser.role) ||
-      (currentUser.role === "oic" && currentUser.oicApproved));
-  } else if (d.status === "For ARD Clearance") {
-    canApprove = (["ard", "admin"].includes(currentUser.role) ||
-      (currentUser.role === "oic" && currentUser.oicApproved));
-  } else if (d.status === "For Division Clearance") {
-    canClear = (["dc", "admin"].includes(currentUser.role) &&
-      (d.division || "ORD") === currentUser.division);
-  }
-
-  if (canESign) {
-    html += '<button class="btn-sm primary" onclick="openESignModal(\'' + escapeHtml(d.ref) + '\')">🖋️ E-Sign</button>';
-  }
-  if (canApprove) {
-    html += '<button class="btn-sm primary" onclick="approveDocument(\'' + escapeHtml(d.ref) + '\')">✔ Approve</button>';
-  }
-  if (canClear) {
-    html += '<button class="btn-sm primary" onclick="approveDocument(\'' + escapeHtml(d.ref) + '\')">✔ Clear</button>';
-  }
-  if (canRelease) {
-    html += '<button class="btn-sm primary" onclick="approveDocument(\'' + escapeHtml(d.ref) + '\')">📤 Release</button>';
-  }
-  if (canESign || canApprove || canClear) {
-    html += '<button class="btn-sm" onclick="showInfo(\'Document returned for revision.\')">↩ Return</button>';
-  }
-
-  html += '<button class="btn-sm" onclick="openQuickSend(\'' + escapeHtml(d.ref) + '\')">↗ Forward</button>';
-  html += '<button class="btn-sm" onclick="printDocument(\'' + escapeHtml(d.ref) + '\')">🖨️ Print</button>';
-  html += '</div>';
-
-  html += '</div>'; // end doc-view-card
+  html += '</div>'; // end background wrapper
   c.innerHTML = html;
+  
+  // Now trigger the appropriate renderer based on file type
+  if (d.attachments && d.attachments.length > 0) {
+    var firstAttachment = d.attachments[0];
+    var fileName = firstAttachment.name || 'document';
+    var fileUrl = firstAttachment.url;
+    var fileExt = fileName.split('.').pop().toLowerCase();
+    var viewerId = 'doc-viewer-' + ref.replace(/[^a-zA-Z0-9]/g, '');
+    
+    if (['pdf'].includes(fileExt) && fileUrl) {
+      renderPDFDocument(fileUrl, viewerId);
+    } else if (['docx'].includes(fileExt) && fileUrl) {
+      renderDOCXDocument(fileUrl, viewerId);
+    } else if (['txt', 'log', 'md', 'csv'].includes(fileExt) && fileUrl) {
+      renderTextDocument(fileUrl, viewerId);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PDF RENDERING WITH PDF.js
+// ═══════════════════════════════════════════════════════════════════════════
+
+function renderPDFDocument(url, viewerId) {
+  var loadingDiv = document.getElementById('pdf-loading-' + viewerId);
+  var container = document.getElementById('pdf-container-' + viewerId);
+  
+  if (!container) return;
+  
+  // Configure PDF.js worker
+  if (typeof pdfjsLib !== 'undefined') {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    
+    // Load the PDF
+    var loadingTask = pdfjsLib.getDocument(url);
+    loadingTask.promise.then(function(pdf) {
+      if (loadingDiv) loadingDiv.style.display = 'none';
+      
+      // Render each page
+      var numPages = pdf.numPages;
+      for (var pageNum = 1; pageNum <= numPages; pageNum++) {
+        renderPDFPage(pdf, pageNum, container);
+      }
+    }).catch(function(error) {
+      if (loadingDiv) {
+        loadingDiv.innerHTML = '<div style="color:#d93025">Error loading PDF: ' + escapeHtml(error.message) + '</div>';
+      }
+    });
+  } else {
+    if (loadingDiv) {
+      loadingDiv.innerHTML = '<div style="color:#d93025">PDF.js library not loaded</div>';
+    }
+  }
+}
+
+function renderPDFPage(pdf, pageNum, container) {
+  pdf.getPage(pageNum).then(function(page) {
+    var scale = 1.5;
+    var viewport = page.getViewport({ scale: scale });
+    
+    // Create canvas for this page
+    var canvas = document.createElement('canvas');
+    canvas.style.display = 'block';
+    canvas.style.margin = '1rem auto';
+    canvas.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+    canvas.style.background = 'white';
+    var context = canvas.getContext('2d');
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+    
+    // Render PDF page into canvas
+    var renderContext = {
+      canvasContext: context,
+      viewport: viewport
+    };
+    
+    page.render(renderContext).promise.then(function() {
+      container.appendChild(canvas);
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DOCX RENDERING WITH MAMMOTH.js
+// ═══════════════════════════════════════════════════════════════════════════
+
+function renderDOCXDocument(url, viewerId) {
+  var loadingDiv = document.getElementById('docx-loading-' + viewerId);
+  var container = document.getElementById('docx-container-' + viewerId);
+  
+  if (!container) return;
+  
+  // Fetch the DOCX file as array buffer
+  fetch(url)
+    .then(function(response) { return response.arrayBuffer(); })
+    .then(function(arrayBuffer) {
+      if (typeof mammoth !== 'undefined') {
+        // Convert DOCX to HTML with Mammoth.js
+        mammoth.convertToHtml({ arrayBuffer: arrayBuffer })
+          .then(function(result) {
+            if (loadingDiv) loadingDiv.style.display = 'none';
+            container.innerHTML = '<div style="max-width:800px;margin:0 auto;line-height:1.8;color:#202124;font-size:14px">' + result.value + '</div>';
+            
+            // Add some basic styling to the rendered content
+            var style = document.createElement('style');
+            style.textContent = '#' + container.id + ' h1 { font-size:24px; font-weight:700; margin:1.5rem 0 1rem; color:#202124; }' +
+                               '#' + container.id + ' h2 { font-size:20px; font-weight:600; margin:1.25rem 0 0.75rem; color:#202124; }' +
+                               '#' + container.id + ' h3 { font-size:16px; font-weight:600; margin:1rem 0 0.5rem; color:#202124; }' +
+                               '#' + container.id + ' p { margin:0.75rem 0; }' +
+                               '#' + container.id + ' table { border-collapse:collapse; width:100%; margin:1rem 0; }' +
+                               '#' + container.id + ' table td, #' + container.id + ' table th { border:1px solid #dadce0; padding:8px 12px; }' +
+                               '#' + container.id + ' img { max-width:100%; height:auto; margin:1rem 0; }' +
+                               '#' + container.id + ' ul, #' + container.id + ' ol { margin:0.75rem 0; padding-left:2rem; }';
+            document.head.appendChild(style);
+          })
+          .catch(function(error) {
+            if (loadingDiv) {
+              loadingDiv.innerHTML = '<div style="color:#d93025">Error rendering Word document: ' + escapeHtml(error.message) + '</div>';
+            }
+          });
+      } else {
+        if (loadingDiv) {
+          loadingDiv.innerHTML = '<div style="color:#d93025">Mammoth.js library not loaded</div>';
+        }
+      }
+    })
+    .catch(function(error) {
+      if (loadingDiv) {
+        loadingDiv.innerHTML = '<div style="color:#d93025">Error loading Word document: ' + escapeHtml(error.message) + '</div>';
+      }
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEXT FILE RENDERING
+// ═══════════════════════════════════════════════════════════════════════════
+
+function renderTextDocument(url, viewerId) {
+  var loadingDiv = document.getElementById('text-loading-' + viewerId);
+  var container = document.getElementById('text-container-' + viewerId);
+  
+  if (!container) return;
+  
+  fetch(url)
+    .then(function(response) { return response.text(); })
+    .then(function(text) {
+      if (loadingDiv) loadingDiv.style.display = 'none';
+      container.textContent = text;
+    })
+    .catch(function(error) {
+      if (loadingDiv) {
+        loadingDiv.innerHTML = '<div style="color:#d93025">Error loading text file: ' + escapeHtml(error.message) + '</div>';
+      }
+    });
 }
 
 /* ── Trail helper functions ─────────────────────────────────────────────── */
+
+function buildAttachmentData(file) {
+  return {
+    name: file.name,
+    size: file.size,
+    type: file.type,
+    url: URL.createObjectURL(file),
+    file: file,
+    temp: true,
+  };
+}
+
+function cloneAttachmentData(file) {
+  if (!file) return null;
+  var actualFile = file.file || file;
+  return {
+    name: actualFile.name || "unknown",
+    size: actualFile.size || 0,
+    type: actualFile.type || "application/octet-stream",
+    url: file.url || URL.createObjectURL(actualFile),
+    file: actualFile,
+    temp: false,
+  };
+}
+
+function releaseAttachment(attachment) {
+  if (attachment && attachment.url && attachment.temp) {
+    URL.revokeObjectURL(attachment.url);
+  }
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + " bytes";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+function renderComposeAttachmentList() {
+  var list = document.getElementById("compose-attachment-list");
+  if (!list) return;
+  if (composeAttachments.length === 0) {
+    list.innerHTML = '<div class="attachment-note">No files attached yet.</div>';
+    return;
+  }
+  list.innerHTML = composeAttachments
+    .map(
+      function (att, idx) {
+        return (
+          '<div class="attachment-item">' +
+          '<span>' + escapeHtml(att.name) + ' (' + escapeHtml(formatFileSize(att.size)) + ')</span>' +
+          '<button type="button" class="attachment-remove" onclick="removeComposeAttachment(' +
+          idx +
+          ')">Remove</button>' +
+          '</div>'
+        );
+      }
+    )
+    .join("");
+}
+
+function removeComposeAttachment(index) {
+  if (index < 0 || index >= composeAttachments.length) return;
+  var attachment = composeAttachments[index];
+  if (attachment && attachment.url) {
+    URL.revokeObjectURL(attachment.url);
+  }
+  composeAttachments.splice(index, 1);
+  renderComposeAttachmentList();
+}
+
+function releaseComposeAttachments() {
+  composeAttachments.forEach(function (att) {
+    if (att && att.url) {
+      URL.revokeObjectURL(att.url);
+    }
+  });
+  composeAttachments = [];
+  renderComposeAttachmentList();
+}
+
+function resetComposeAttachments() {
+  if (composeAttachments.length > 0) {
+    releaseComposeAttachments();
+  }
+  composeAttachments = [];
+  renderComposeAttachmentList();
+}
+
+function openComposeAttachmentPicker() {
+  var input = document.getElementById("compose-attachment-input");
+  if (input) {
+    input.click();
+  }
+}
+
+function handleComposeAttachment(input) {
+  var files = input.files;
+  if (!files || files.length === 0) return;
+  Array.from(files).forEach(function (file) {
+    composeAttachments.push(buildAttachmentData(file));
+  });
+  renderComposeAttachmentList();
+  input.value = "";
+}
+
+function renderCommunicationThread(d) {
+  var threadItems = (d.communicationThread || []).slice();
+  threadItems.sort(function (a, b) {
+    return new Date(a.dateTime) - new Date(b.dateTime);
+  });
+
+  var html = '';
+  if (threadItems.length === 0) {
+    html += '<div class="thread-empty">No communication yet. Start the conversation by sending a reply.</div>';
+  } else {
+    threadItems.forEach(function (item) {
+      html += '<div class="thread-message">';
+      html += '<div class="thread-meta">';
+      html += '<div><strong>' + escapeHtml(item.senderName || 'Unknown') + '</strong> <span class="thread-role">' + escapeHtml(item.senderRoleLabel || item.senderRole || '') + '</span></div>';
+      html += '<div class="thread-timestamp">' + escapeHtml(formatTrailTimestamp(item.dateTime || '')) + '</div>';
+      html += '</div>';
+      html += '<div class="thread-label">' + (item.type === 'instruction' ? 'Instruction:' : 'Reply:') + '</div>';
+      html += '<div class="thread-body">' + escapeHtml(item.message || '') + '</div>';
+      html += '</div>';
+    });
+  }
+  return html;
+}
+
+function openCommunicationModal(ref) {
+  currentCommunicationRef = ref;
+  renderCommunicationModal(ref);
+  var modal = document.getElementById('communication-modal');
+  if (modal) {
+    modal.classList.add('open');
+    document.body.classList.add('modal-open');
+  }
+}
+
+function closeCommunicationModal() {
+  var modal = document.getElementById('communication-modal');
+  if (modal) {
+    modal.classList.remove('open');
+    document.body.classList.remove('modal-open');
+  }
+}
+
+function renderCommunicationModal(ref) {
+  var d = getDocByRef(ref);
+  if (!d) return;
+  var container = document.getElementById('communication-modal-body');
+  if (!container) return;
+
+  var html = '<div class="modal-subheader" style="margin-bottom:1rem">';
+  html += '<div style="font-size:14px;font-weight:700;color:var(--navy)">Communication Thread</div>';
+  html += '<div style="font-size:12px;color:var(--muted)">Document ' + escapeHtml(d.ref || '') + '</div>';
+  html += '</div>';
+  html += renderCommunicationThread(d);
+  html += '<div class="thread-reply-area" style="margin-top:1rem">';
+  html += '<label style="font-weight:700;margin-bottom:.5rem;display:block">Your Reply</label>';
+  html += '<textarea id="doc-reply-message" class="thread-reply-input" placeholder="Type your response here..."></textarea>';
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function submitReply(ref) {
+  var d = getDocByRef(ref);
+  if (!d) return;
+  var textarea = document.getElementById('doc-reply-message');
+  if (!textarea) return;
+  var message = (textarea.value || '').trim();
+  if (!message) {
+    showError('Please enter a reply before sending.');
+    return;
+  }
+  getDocumentThread(d).push(createThreadMessage('reply', message));
+  textarea.value = '';
+  renderCommunicationModal(ref);
+
+  var recipient = determineReplyNotificationRecipient(d);
+  if (recipient) {
+    addNotification({
+      recipientKey: getNotificationKeyForUser(recipient),
+      type: "new_reply",
+      documentId: d.ref,
+      documentRef: d.ref,
+      documentTitle: d.subject,
+      senderId: currentUser.id || currentUser.email || currentUser.name,
+      senderName: currentUser.name,
+      senderRole: currentUser.roleLabel || currentUser.role || "",
+      message: currentUser.name + " replied on the communication thread.",
+      preview: message.length > 100 ? message.slice(0, 97) + "..." : message,
+    });
+  }
+
+  showSuccess('Reply added to communication thread.');
+}
 
 function formatTrailTimestamp(ts) {
   try {
     var d = new Date(ts);
     if (isNaN(d.getTime())) return ts;
-    return d.toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" }) +
-      " · " + d.toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" });
-  } catch (e) { return ts; }
+    return formatManilaDateTime(d);
+  } catch (e) {
+    return ts;
+  }
 }
 
 function getTrailActionIcon(action) {
@@ -5725,13 +7030,7 @@ function openESignModal(ref) {
 
   var signName = currentUser.name;
   var signRole = currentUser.roleLabel;
-  var today = new Date().toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  var today = formatManilaDateTime(new Date());
 
   modal.innerHTML = `
     <div class="modal" style="max-width: 500px;">
@@ -5886,61 +7185,180 @@ function tlItem(done, label, time) {
 }
 
 function openCompose() {
+  resetComposeAttachments();
   const modal = document.getElementById("compose-modal");
   if (modal) {
+    var picker = document.getElementById("route-document-picker");
+    if (picker) {
+      var options = ['<option value="">Choose from the Document Repository...</option>'];
+      DOCS.forEach(function (doc) {
+        var ver = doc.version ? " [v" + doc.version + "]" : "";
+        var status = doc.status ? " — " + doc.status : "";
+        var label = (doc.ref || "") + " — " + (doc.subject || "Untitled") + ver + status;
+        options.push('<option value="' + escapeHtml(doc.ref || "") + '">' + escapeHtml(label) + '</option>');
+      });
+      picker.innerHTML = options.join("");
+      picker.value = "";
+      var summary = document.getElementById("route-document-summary");
+      if (summary) summary.style.display = "none";
+    }
+    // Reset routing fields
+    var divEl = document.getElementById("compose-to-division");
+    var toEl = document.getElementById("compose-to");
+    var deadlineEl = document.getElementById("compose-deadline");
+    var priorityEl = document.getElementById("compose-priority");
+    var remarksEl = document.getElementById("compose-remarks");
+    var remarksExtraEl = document.getElementById("compose-remarks-extra");
+    if (divEl) divEl.value = "";
+    if (toEl) toEl.value = "";
+    if (deadlineEl) deadlineEl.value = "";
+    if (priorityEl) priorityEl.value = "Normal";
+    if (remarksEl) remarksEl.value = "";
+    if (remarksExtraEl) remarksExtraEl.value = "";
     modal.classList.add("open");
-    document.body.classList.add("modal-open"); /* ← NEW */
+    document.body.classList.add("modal-open");
   }
 }
+
+// Open compose pre-selecting a specific document
+function openComposeWithDoc(ref) {
+  openCompose();
+  setTimeout(function () {
+    var picker = document.getElementById("route-document-picker");
+    if (picker) {
+      picker.value = ref;
+      selectRouteDocument(ref);
+    }
+  }, 50);
+}
+
+function selectRouteDocument(ref) {
+  var summary = document.getElementById("route-document-summary");
+  var summaryText = document.getElementById("route-document-summary-text");
+  var metaEl = document.getElementById("route-document-meta");
+  var viewBtn = document.getElementById("route-doc-view-btn");
+  var dlBtn = document.getElementById("route-doc-download-btn");
+  var verBadge = document.getElementById("route-doc-version-badge");
+  var doc = getDocByRef(ref);
+  if (!summary || !summaryText) return;
+  if (!doc) {
+    summary.style.display = "none";
+    return;
+  }
+  summaryText.textContent = doc.ref + " — " + doc.subject;
+  if (metaEl) {
+    var meta = [];
+    if (doc.type) meta.push('<span>📄 ' + escapeHtml(doc.type) + '</span>');
+    var cat = doc.category || (doc.metadata && doc.metadata.category);
+    if (cat) meta.push('<span>🏷 ' + escapeHtml(cat) + '</span>');
+    if (doc.division) meta.push('<span>🏢 ' + escapeHtml(getDivisionAbbrev(doc.division)) + '</span>');
+    meta.push('<span>' + statusPill(doc.status || 'New') + '</span>');
+    metaEl.innerHTML = meta.join('');
+  }
+  if (verBadge) {
+    var ver = doc.version || 1;
+    verBadge.innerHTML = '<span class="pill pill-blue" style="font-size:10px">Current: v' + ver + '</span>';
+    verBadge.style.display = "inline";
+  }
+  if (viewBtn) {
+    viewBtn.onclick = function () { closeCompose(); viewDoc(ref); };
+    viewBtn.style.display = "inline-flex";
+  }
+  if (dlBtn) {
+    dlBtn.onclick = function () { downloadDocument(ref); };
+    dlBtn.style.display = doc.attachments && doc.attachments.length ? "inline-flex" : "none";
+  }
+  // Auto-fill subject hidden field for compat
+  var subjEl = document.getElementById("compose-subject");
+  if (subjEl) subjEl.value = doc.subject || "";
+  summary.style.display = "block";
+}
+
 function closeCompose() {
+  releaseComposeAttachments();
   const modal = document.getElementById("compose-modal");
   if (modal) {
     modal.classList.remove("open");
-    document.body.classList.remove("modal-open"); /* ← NEW */
+    document.body.classList.remove("modal-open");
   }
 }
+
 function sendDoc() {
-  var to = (document.getElementById("compose-to").value || "").trim();
-  var subject = (document.getElementById("compose-subject").value || "").trim();
-  var kind = document.getElementById("compose-kind").value || "outgoing";
-  var type = document.getElementById("compose-type").value || "Memorandum";
-  var remarks = (document.getElementById("compose-remarks").value || "").trim();
-  var conf = document.querySelector('input[name="conf"]:checked');
-  var isConf = conf && conf.value === "yes";
+  var selectedRef = (document.getElementById("route-document-picker") || {}).value || "";
+  var destDivision = ((document.getElementById("compose-to-division") || {}).value || "").trim();
+  var to = ((document.getElementById("compose-to") || {}).value || "").trim();
+  var deadline = ((document.getElementById("compose-deadline") || {}).value || "").trim();
+  var priority = ((document.getElementById("compose-priority") || {}).value || "Normal").trim();
+  var instruction = ((document.getElementById("compose-remarks") || {}).value || "").trim();
+  var remarks = ((document.getElementById("compose-remarks-extra") || {}).value || "").trim();
 
-  if (!to) { showError("Please specify a recipient."); return; }
-  if (!subject) { showError("Please enter a subject."); return; }
+  if (!selectedRef) {
+    showError("Please select a document from the repository before sending.");
+    return;
+  }
 
-  var today = formatDateISO(new Date());
-  var ref = nextSystemReference(today);
+  var documentToRoute = getDocByRef(selectedRef);
+  if (!documentToRoute) {
+    showError("Selected document could not be found in the repository.");
+    return;
+  }
 
-  DOCS.unshift({
-    ref: ref,
-    type: type,
-    from: currentUser.name,
-    to: to,
-    subject: subject,
-    status: "For ARD Clearance",
-    date: today,
-    conf: isConf,
-    kind: kind,
-    division: currentUser.division || "ORD",
-    physicalCopy: false,
-    content: remarks || "",
-    tracking: {
-      lastActor: currentUser.role,
-      lastUpdated: new Date().toISOString(),
-      trail: [{ user: currentUser.name, action: "Sent", timestamp: new Date().toISOString() }]
-    }
+  var recipient = to || destDivision;
+  if (!recipient) {
+    showError("Please specify a destination division or recipient.");
+    return;
+  }
+
+  var resolvedTo = to || destDivision;
+  documentToRoute.to = resolvedTo;
+  documentToRoute.division = destDivision || documentToRoute.division || currentUser.division || "ORD";
+  documentToRoute.instruction = instruction || documentToRoute.instruction || "";
+  documentToRoute.remarks = remarks || documentToRoute.remarks || "";
+  if (deadline) documentToRoute.deadline = deadline;
+  if (priority) documentToRoute.priority = priority;
+  documentToRoute.status = "Sent";
+  documentToRoute.kind = "outgoing";
+  documentToRoute.lastSentBy = currentUser.name;
+  documentToRoute.lastSentDate = formatDateISO(new Date());
+  documentToRoute.tracking = documentToRoute.tracking || {};
+  documentToRoute.tracking.lastActor = currentUser.role;
+  documentToRoute.tracking.lastUpdated = new Date().toISOString();
+  documentToRoute.tracking.trail = documentToRoute.tracking.trail || [];
+  documentToRoute.tracking.trail.push({
+    user: currentUser.name,
+    action: "Sent to " + resolvedTo + (destDivision ? " (" + getDivisionAbbrev(destDivision) + ")" : ""),
+    timestamp: new Date().toISOString(),
   });
 
-  showSuccess("Document sent and logged. Reference: " + ref);
+  var resolvedRecipient = resolveRecipient(to);
+  if (resolvedRecipient) {
+    documentToRoute.recipientId = resolvedRecipient.email || resolvedRecipient.id || resolvedRecipient.name;
+    documentToRoute.recipientEmail = resolvedRecipient.email || "";
+    documentToRoute.recipientName = resolvedRecipient.name || to;
+    addNotification({
+      recipientKey: getNotificationKeyForUser(resolvedRecipient),
+      type: "document_received",
+      documentId: documentToRoute.ref,
+      documentRef: documentToRoute.ref,
+      documentTitle: documentToRoute.subject,
+      senderId: currentUser.email || currentUser.id || currentUser.name,
+      senderName: currentUser.name,
+      senderRole: currentUser.roleLabel || currentUser.role || "",
+      message: currentUser.name + " sent a document to you.",
+      preview: documentToRoute.subject,
+    });
+  }
+
+  showSuccess("Document " + selectedRef + " sent successfully to " + resolvedTo + ".");
   closeCompose();
-  if (currentPage === "outgoing" || currentPage === "logbook") showPage(currentPage);
+  renderNav();
+  if (currentPage === "outgoing" || currentPage === "logbook" || currentPage === "search") showPage(currentPage);
 }
 
-function openManualLogbook(defaultSubject) {
+function openManualLogbook(defaultSubject, attachment) {
   currentLogbookEditRef = null;
+  currentManualUploadAttachment = attachment || null;
+  renderManualUploadAttachment();
   var today = formatDateISO(new Date());
   var ref = nextSystemReference(today);
   document.getElementById("manual-logbook-modal").classList.add("open");
@@ -5961,7 +7379,35 @@ function openManualLogbook(defaultSubject) {
   document.body.classList.add("modal-open"); /* ← NEW */
 }
 
+function renderManualUploadAttachment() {
+  var wrapper = document.getElementById("manual-attachment-wrapper");
+  var list = document.getElementById("manual-attachment-list");
+  if (!wrapper || !list) return;
+  if (currentManualUploadAttachment) {
+    wrapper.style.display = "block";
+    list.innerHTML =
+      '<div class="attachment-item">' +
+      '<span>' + escapeHtml(currentManualUploadAttachment.name) + ' (' +
+      escapeHtml(formatFileSize(currentManualUploadAttachment.size)) + ') </span>' +
+      (currentManualUploadAttachment.url
+        ? '<a class="attachment-download" href="' +
+          escapeHtml(currentManualUploadAttachment.url) +
+          '" download="' +
+          escapeHtml(currentManualUploadAttachment.name) +
+          '">Download</a>'
+        : '') +
+      '</div>';
+  } else {
+    wrapper.style.display = "none";
+    list.innerHTML = "";
+  }
+}
+
 function closeManualLogbook() {
+  if (currentManualUploadAttachment && currentManualUploadAttachment.temp) {
+    releaseAttachment(currentManualUploadAttachment);
+  }
+  currentManualUploadAttachment = null;
   const modal = document.getElementById("manual-logbook-modal");
   if (modal) {
     modal.classList.remove("open");
@@ -5986,11 +7432,12 @@ function openQuickSend(ref) {
   }
   currentQuickSendRef = ref;
   document.getElementById("quick-send-title").textContent =
-    "Send Document " + ref;
+    "Route Existing Document " + ref;
   document.getElementById("quick-send-to").value = d.to || "";
-  document.getElementById("quick-send-remarks").value = d.sendRemarks || "";
+  document.getElementById("quick-send-remarks").value = d.instruction || d.sendRemarks || "";
+  document.getElementById("quick-send-outlook").value = d.outlookEmailContent || "";
   document.getElementById("quick-send-modal").classList.add("open");
-  document.body.classList.add("modal-open"); /* ← NEW */
+  document.body.classList.add("modal-open");
 }
 
 function closeQuickSend() {
@@ -6003,8 +7450,11 @@ function submitQuickSend() {
   var d = getDocByRef(currentQuickSendRef);
   if (!d) return;
   var to = (document.getElementById("quick-send-to").value || "").trim();
-  var remarks = (
+  var instruction = (
     document.getElementById("quick-send-remarks").value || ""
+  ).trim();
+  var outlookContent = (
+    document.getElementById("quick-send-outlook").value || ""
   ).trim();
   if (!to) {
     showError("Please fill in where to send the document.");
@@ -6012,10 +7462,35 @@ function submitQuickSend() {
   }
 
   d.to = to;
-  d.sendRemarks = remarks;
-  d.status = "Sent to " + to;
+  d.instruction = instruction || d.instruction || "";
+  d.outlookEmailContent = outlookContent || d.outlookEmailContent || "";
+  if (instruction) {
+    getDocumentThread(d).push(createThreadMessage("instruction", instruction));
+  }
+
+  // Preserve one logical document and route it based on destination
+  var recipient = resolveRecipient(to);
+  if (recipient && recipient.division) {
+    d.division = recipient.division;
+  }
+  if (recipient && recipient.role) {
+    d.toRole = recipient.role.toLowerCase();
+  }
+  d.kind = "incoming";
+  d.status = getRoutingStatusForRecipient(to);
   d.lastSentBy = currentUser.name;
   d.lastSentDate = formatDateISO(new Date());
+  d.from = currentUser.name;
+  d.senderId = currentUser.email || currentUser.id || currentUser.name;
+  d.senderEmail = currentUser.email || "";
+  d.senderName = currentUser.name;
+  d.senderRole = currentUser.roleLabel || currentUser.role || "";
+  if (recipient) {
+    d.recipientId = recipient.email || recipient.id || recipient.name;
+    d.recipientEmail = recipient.email || "";
+    d.recipientName = recipient.name || to;
+    d.recipientRole = recipient.role || "";
+  }
 
   ensureTrail(d);
   d.tracking.trail.push({
@@ -6027,7 +7502,23 @@ function submitQuickSend() {
   d.tracking.lastActor = currentUser.role;
   d.tracking.updatedBy = currentUser.name;
 
+  if (recipient) {
+    addNotification({
+      recipientKey: getNotificationKeyForUser(recipient),
+      type: "document_received",
+      documentId: d.ref,
+      documentRef: d.ref,
+      documentTitle: d.subject,
+      senderId: currentUser.id || currentUser.email || currentUser.name,
+      senderName: currentUser.name,
+      senderRole: currentUser.roleLabel || currentUser.role || "",
+      message: currentUser.name + " sent you a document.",
+      preview: d.subject,
+    });
+  }
+
   closeQuickSend();
+  renderNav();
   showSuccess(
     "Document " + currentQuickSendRef + " sent successfully to " + to + ".",
   );
@@ -6064,11 +7555,506 @@ function openLogbookEdit(ref) {
   document.getElementById("manual-physical").value = d.physicalCopy
     ? "yes"
     : "no";
+  currentManualUploadAttachment = d.attachments && d.attachments[0] ? d.attachments[0] : null;
+  renderManualUploadAttachment();
   document.body.classList.add("modal-open");
 }
 
 function openUploadDialog() {
   document.getElementById("local-upload-input").click();
+}
+
+function openUploadDocumentModal() {
+  var modal = document.getElementById("upload-document-modal");
+  if (!modal) return;
+  var refField = document.getElementById("upload-document-ref");
+  var dateField = document.getElementById("upload-document-date");
+  var uploaderField = document.getElementById("upload-document-uploader");
+  if (refField) refField.value = nextSystemReference(formatDateISO(new Date()));
+  if (dateField) dateField.value = formatDateISO(new Date());
+  if (uploaderField) uploaderField.value = currentUser.name || "";
+  currentUploadDocumentFile = null;
+  var fileList = document.getElementById("upload-document-file-list");
+  if (fileList) fileList.innerHTML = '<div class="attachment-note">No file selected yet.</div>';
+  modal.classList.add("open");
+  document.body.classList.add("modal-open");
+}
+
+function closeUploadDocumentModal() {
+  var modal = document.getElementById("upload-document-modal");
+  if (modal) modal.classList.remove("open");
+  document.body.classList.remove("modal-open");
+}
+
+function handleUploadDocumentFile(input) {
+  var file = input.files && input.files[0];
+  if (!file) return;
+  currentUploadDocumentFile = file;
+  var fileList = document.getElementById("upload-document-file-list");
+  if (fileList) {
+    fileList.innerHTML = '<div class="attachment-item"><span>' + escapeHtml(file.name) + ' (' + escapeHtml(formatFileSize(file.size)) + ')</span></div>';
+  }
+  input.value = "";
+}
+
+function submitUploadDocument() {
+  var ref = (document.getElementById("upload-document-ref") || {}).value || "";
+  var type = (document.getElementById("upload-document-type") || {}).value || "Memorandum";
+  var category = (document.getElementById("upload-document-category") || {}).value || "Administrative";
+  var subject = (document.getElementById("upload-document-subject") || {}).value.trim();
+  var date = (document.getElementById("upload-document-date") || {}).value || formatDateISO(new Date());
+  var confidentiality = (document.getElementById("upload-document-confidentiality") || {}).value || "Internal";
+  var priority = (document.getElementById("upload-document-priority") || {}).value || "Normal";
+  var source = (document.getElementById("upload-document-source") || {}).value.trim();
+  var description = (document.getElementById("upload-document-description") || {}).value.trim();
+  var file = currentUploadDocumentFile;
+
+  if (!subject || !ref || !source || !file) {
+    showError("Please complete all required upload fields and select a document file.");
+    return;
+  }
+
+  var newDoc = {
+    ref: ref,
+    documentId: ref,
+    type: type,
+    category: category,
+    subject: subject,
+    referenceNumber: ref,
+    documentDate: date,
+    confidentialityLevel: confidentiality,
+    priority: priority,
+    source: source,
+    sender: source,
+    from: source,
+    to: currentUser.division || "ORD",
+    description: description,
+    uploadedBy: currentUser.name,
+    uploadedByRole: currentUser.roleLabel || currentUser.role || "",
+    status: "New",
+    date: date,
+    kind: "incoming",
+    division: currentUser.division || "ORD",
+    physicalCopy: false,
+    version: 1,
+    versionHistory: [{
+      version: 1,
+      uploadedBy: currentUser.name,
+      date: date,
+      note: "Initial upload"
+    }],
+    metadata: {
+      documentType: type,
+      category: category,
+      subject: subject,
+      referenceNumber: ref,
+      documentDate: date,
+      confidentialityLevel: confidentiality,
+      priority: priority,
+      source: source,
+      description: description,
+    },
+    tracking: {
+      lastActor: currentUser.role,
+      lastUpdated: new Date().toISOString(),
+      trail: [{ user: currentUser.name, action: "Uploaded to DRMS", timestamp: new Date().toISOString() }],
+    },
+  };
+
+  if (file) {
+    newDoc.attachments = [cloneAttachmentData(file)];
+  }
+
+  DOCS.unshift(newDoc);
+  closeUploadDocumentModal();
+  showSuccess("Document uploaded and recorded in the DRMS. Reference: " + ref);
+  renderNav();
+  currentPage = "logbook";
+  showPage("logbook");
+  currentUploadDocumentFile = null;
+}
+
+/* ===================================================================
+   DOCUMENT VERSIONING
+   =================================================================== */
+
+var currentVersionRef = null;
+var currentVersionFile = null;
+
+function openUploadVersionModal(ref) {
+  var doc = getDocByRef(ref);
+  if (!doc) { showError("Document not found."); return; }
+  currentVersionRef = ref;
+  currentVersionFile = null;
+  var modal = document.getElementById("upload-version-modal");
+  if (!modal) return;
+  document.getElementById("version-doc-ref").value = doc.ref;
+  document.getElementById("version-doc-subject").value = doc.subject || "";
+  var curVer = doc.version || 1;
+  document.getElementById("version-current").value = "v" + curVer;
+  document.getElementById("version-new").value = "v" + (curVer + 1);
+  document.getElementById("version-notes").value = "";
+  var fileList = document.getElementById("version-file-list");
+  if (fileList) fileList.innerHTML = '<div class="attachment-note">No file selected yet.</div>';
+  var fileInput = document.getElementById("version-file-input");
+  if (fileInput) fileInput.value = "";
+  modal.classList.add("open");
+  document.body.classList.add("modal-open");
+}
+
+function closeUploadVersionModal() {
+  currentVersionRef = null;
+  currentVersionFile = null;
+  var modal = document.getElementById("upload-version-modal");
+  if (modal) modal.classList.remove("open");
+  document.body.classList.remove("modal-open");
+}
+
+function handleVersionFile(input) {
+  var file = input.files && input.files[0];
+  if (!file) return;
+  currentVersionFile = file;
+  var fileList = document.getElementById("version-file-list");
+  if (fileList) {
+    fileList.innerHTML = '<div class="attachment-item"><span>' + escapeHtml(file.name) + ' (' + formatFileSize(file.size) + ')</span></div>';
+  }
+  input.value = "";
+}
+
+function submitNewVersion() {
+  if (!currentVersionRef) return;
+  var notes = (document.getElementById("version-notes").value || "").trim();
+  if (!notes) { showError("Please provide version notes describing what changed."); return; }
+  if (!currentVersionFile) { showError("Please select the revised document file."); return; }
+
+  var doc = getDocByRef(currentVersionRef);
+  if (!doc) { showError("Document not found."); return; }
+
+  var curVer = doc.version || 1;
+  var newVer = curVer + 1;
+  doc.version = newVer;
+  if (!doc.versionHistory) {
+    doc.versionHistory = [{ version: curVer, uploadedBy: doc.uploadedBy || doc.from || "—", date: doc.date, note: "Original version" }];
+  }
+  doc.versionHistory.push({
+    version: newVer,
+    uploadedBy: currentUser.name,
+    date: formatDateISO(new Date()),
+    note: notes,
+    fileName: currentVersionFile.name,
+    fileSize: currentVersionFile.size,
+  });
+
+  // Replace the most recent attachment
+  var newAttachment = cloneAttachmentData(currentVersionFile);
+  doc.attachments = [newAttachment];
+
+  // Add tracking entry
+  if (!doc.tracking) doc.tracking = { trail: [] };
+  if (!doc.tracking.trail) doc.tracking.trail = [];
+  doc.tracking.trail.push({
+    user: currentUser.name,
+    action: "Uploaded v" + newVer + " — " + notes,
+    timestamp: new Date().toISOString(),
+  });
+  doc.tracking.lastUpdated = new Date().toISOString();
+  doc.tracking.lastActor = currentUser.role;
+
+  closeUploadVersionModal();
+  showSuccess("Version v" + newVer + " uploaded for document " + doc.ref + ".");
+  renderNav();
+  if (currentPage === "search" || currentPage === "logbook") showPage(currentPage);
+}
+
+function showVersionHistory(ref) {
+  var doc = getDocByRef(ref);
+  if (!doc) { showError("Document not found."); return; }
+  var modal = document.getElementById("version-history-modal");
+  var body = document.getElementById("version-history-body");
+  if (!modal || !body) return;
+
+  var h = '<div style="margin-bottom:1rem">';
+  h += '<div style="font-family:monospace;font-size:16px;font-weight:700;color:var(--navy)">' + escapeHtml(doc.ref) + '</div>';
+  h += '<div style="font-size:13px;color:var(--muted);margin-top:2px">' + escapeHtml(doc.subject || "") + '</div>';
+  h += '</div>';
+
+  var history = doc.versionHistory;
+  if (!history || history.length === 0) {
+    var curVer = doc.version || 1;
+    history = [{ version: curVer, uploadedBy: doc.uploadedBy || doc.from || "—", date: doc.date || "—", note: "Original upload" }];
+  }
+
+  h += '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Version</th><th>Uploaded By</th><th>Date</th><th>Notes</th><th>Actions</th></tr></thead><tbody>';
+  var currentVer = doc.version || history[history.length - 1].version || 1;
+  history.slice().reverse().forEach(function (v) {
+    var isCurrent = v.version === currentVer;
+    var badge = isCurrent ? ' <span class="pill pill-green" style="font-size:9px">Current</span>' : '';
+    h += '<tr>';
+    h += '<td style="font-weight:700;color:var(--navy3)">v' + v.version + badge + '</td>';
+    h += '<td>' + escapeHtml(v.uploadedBy || "—") + '</td>';
+    h += '<td>' + escapeHtml(v.date || "—") + '</td>';
+    h += '<td>' + escapeHtml(v.note || "—") + '</td>';
+    h += '<td>';
+    if (v.fileName) {
+      h += '<span style="font-size:11px;color:var(--muted)">' + escapeHtml(v.fileName) + '</span>';
+    } else if (doc.attachments && doc.attachments.length && isCurrent) {
+      h += '<button class="btn-sm" onclick="downloadDocument(\'' + escapeHtml(doc.ref) + '\')">⬇ Download</button>';
+    } else {
+      h += '—';
+    }
+    h += '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+
+  h += '<div style="margin-top:1.25rem;display:flex;gap:.5rem">';
+  h += '<button class="btn-sm primary" onclick="closeVersionHistoryModal();openUploadVersionModal(\'' + escapeHtml(doc.ref) + '\')">📤 Upload New Version</button>';
+  h += '<button class="btn-sm" onclick="closeVersionHistoryModal();openComposeWithDoc(\'' + escapeHtml(doc.ref) + '\')">✉️ Send This Document</button>';
+  h += '</div>';
+
+  body.innerHTML = h;
+  modal.classList.add("open");
+  document.body.classList.add("modal-open");
+}
+
+function closeVersionHistoryModal() {
+  var modal = document.getElementById("version-history-modal");
+  if (modal) modal.classList.remove("open");
+  document.body.classList.remove("modal-open");
+}
+
+/* ===================================================================
+   WORKFLOW STATUS UPDATE SYSTEM
+   =================================================================== */
+
+var currentStatusUpdateRef = null;
+var selectedWorkflowStatus = null;
+
+function openStatusUpdateModal(ref) {
+  var doc = getDocByRef(ref);
+  if (!doc) { showError("Document not found."); return; }
+  
+  currentStatusUpdateRef = ref;
+  selectedWorkflowStatus = null;
+  
+  // Populate document info
+  var infoDiv = document.getElementById("status-update-doc-info");
+  if (infoDiv) {
+    infoDiv.innerHTML = 
+      '<div style="font-weight:700;color:var(--navy);margin-bottom:4px">' + escapeHtml(doc.ref) + '</div>' +
+      '<div style="color:var(--text)">' + escapeHtml(doc.subject || '—') + '</div>' +
+      '<div style="margin-top:6px;font-size:12px;color:var(--muted)">Current Status: <strong>' + escapeHtml(doc.status || 'New') + '</strong></div>';
+  }
+  
+  // Reset radio buttons and comment field
+  var radios = document.getElementsByName("workflow-status");
+  for (var i = 0; i < radios.length; i++) {
+    radios[i].checked = false;
+    radios[i].parentElement.style.borderColor = '#e0e0e0';
+  }
+  
+  var commentField = document.getElementById("status-comment-field");
+  var commentTextarea = document.getElementById("status-comment");
+  if (commentField) commentField.style.display = 'none';
+  if (commentTextarea) commentTextarea.value = '';
+  
+  // Open modal
+  var modal = document.getElementById("status-update-modal");
+  if (modal) {
+    modal.classList.add("open");
+    document.body.classList.add("modal-open");
+  }
+}
+
+function closeStatusUpdateModal() {
+  var modal = document.getElementById("status-update-modal");
+  if (modal) modal.classList.remove("open");
+  document.body.classList.remove("modal-open");
+  currentStatusUpdateRef = null;
+  selectedWorkflowStatus = null;
+}
+
+function selectWorkflowStatus(radio) {
+  selectedWorkflowStatus = radio.value;
+  
+  // Update visual styling for selected radio
+  var radios = document.getElementsByName("workflow-status");
+  for (var i = 0; i < radios.length; i++) {
+    if (radios[i].checked) {
+      radios[i].parentElement.style.borderColor = 'var(--navy)';
+      radios[i].parentElement.style.background = '#f0f7ff';
+    } else {
+      radios[i].parentElement.style.borderColor = '#e0e0e0';
+      radios[i].parentElement.style.background = 'white';
+    }
+  }
+  
+  // Show comment field for "Needs Clarification" or "On Hold"
+  var commentField = document.getElementById("status-comment-field");
+  if (commentField) {
+    if (radio.value === "Needs Clarification" || radio.value === "On Hold") {
+      commentField.style.display = 'block';
+    } else {
+      commentField.style.display = 'none';
+    }
+  }
+}
+
+function submitStatusUpdate() {
+  if (!currentStatusUpdateRef) {
+    showError("No document selected.");
+    return;
+  }
+  
+  if (!selectedWorkflowStatus) {
+    showError("Please select a status.");
+    return;
+  }
+  
+  var doc = getDocByRef(currentStatusUpdateRef);
+  if (!doc) {
+    showError("Document not found.");
+    return;
+  }
+  
+  var comment = (document.getElementById("status-comment").value || "").trim();
+  var oldStatus = doc.status || "New";
+  
+  // Update document status - THIS IS THE CENTRALIZED STATUS
+  doc.status = selectedWorkflowStatus;
+  
+  // Add to tracking trail with timestamp
+  if (!doc.tracking) doc.tracking = { trail: [] };
+  if (!doc.tracking.trail) doc.tracking.trail = [];
+  
+  var actionText = "Status changed from " + oldStatus + " to " + selectedWorkflowStatus;
+  if (comment) {
+    actionText += " — " + comment;
+  }
+  
+  doc.tracking.trail.push({
+    user: currentUser.name,
+    action: actionText,
+    timestamp: new Date().toISOString(),
+    statusChange: {
+      from: oldStatus,
+      to: selectedWorkflowStatus,
+      comment: comment
+    }
+  });
+  
+  doc.tracking.lastUpdated = new Date().toISOString();
+  doc.tracking.lastActor = currentUser.role;
+  
+  closeStatusUpdateModal();
+  showSuccess("Document status updated to: " + selectedWorkflowStatus);
+  
+  // Refresh current page to show updated status
+  if (currentPage === "logbook") {
+    showPage("logbook");
+  } else if (currentPage === "incoming") {
+    showPage("incoming");
+  } else if (currentPage === "outgoing") {
+    showPage("outgoing");
+  } else if (currentPage === "dashboard") {
+    showPage("dashboard");
+  }
+  
+  // Update navigation counts
+  renderNav();
+}
+
+/* ===================================================================
+   DOCUMENT METADATA MODAL
+   =================================================================== */
+
+function showMetadataModal(ref) {
+  var doc = getDocByRef(ref);
+  if (!doc) { showError("Document not found."); return; }
+  var modal = document.getElementById("metadata-modal");
+  var body = document.getElementById("metadata-modal-body");
+  if (!modal || !body) return;
+
+  var m = doc.metadata || {};
+  var fields = [
+    ["Reference Number", doc.ref],
+    ["Subject", doc.subject],
+    ["Document Type", doc.type || m.documentType],
+    ["Document Category", doc.category || m.category],
+    ["Document Date", doc.documentDate || doc.date],
+    ["Confidentiality Level", doc.confidentialityLevel || m.confidentialityLevel],
+    ["Priority", doc.priority || m.priority],
+    ["Source / Sender", doc.source || doc.from || m.source],
+    ["Uploaded By", doc.uploadedBy || m.uploadedBy],
+    ["Division / Office", doc.division],
+    ["Current Handler / Routed To", doc.to],
+    ["Current Status", doc.status],
+    ["Version", doc.version ? "v" + doc.version : "v1"],
+    ["Description / Remarks", doc.description || m.description],
+    ["Physical Copy", doc.physicalCopy ? "Yes" : "No"],
+  ];
+
+  var h = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">';
+  h += '<div><div style="font-family:monospace;font-size:17px;font-weight:700;color:var(--navy)">' + escapeHtml(doc.ref) + '</div>';
+  h += '<div style="font-size:12px;color:var(--muted);margin-top:2px">Structured metadata for DRMS record</div></div>';
+  h += statusPill(doc.status || "New");
+  h += '</div>';
+
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.65rem 1.5rem;margin-bottom:1rem">';
+  fields.forEach(function (pair) {
+    var label = pair[0], value = pair[1];
+    if (!value && value !== 0) return;
+    h += '<div style="padding:.55rem .75rem;background:#f8fafc;border-radius:7px;border:1px solid var(--border)">';
+    h += '<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.2rem">' + escapeHtml(label) + '</div>';
+    h += '<div style="font-size:13px;color:var(--text);font-weight:500">' + escapeHtml(String(value)) + '</div>';
+    h += '</div>';
+  });
+  h += '</div>';
+
+  // Version history summary
+  if (doc.versionHistory && doc.versionHistory.length > 1) {
+    h += '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem">';
+    h += '<div style="font-size:11px;font-weight:700;color:var(--navy3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:.5rem">Version History</div>';
+    doc.versionHistory.forEach(function (v) {
+      h += '<div style="font-size:12px;color:var(--text);padding:.2rem 0">';
+      h += '<strong>v' + v.version + '</strong> — ' + escapeHtml(v.date || "—") + ' — ' + escapeHtml(v.uploadedBy || "—") + ' — ' + escapeHtml(v.note || "");
+      h += '</div>';
+    });
+    h += '</div>';
+  }
+
+  h += '<div style="background:#fafafa;border-radius:8px;border:1px dashed var(--border);padding:.75rem 1rem;font-size:11.5px;color:var(--muted);line-height:1.5">';
+  h += '📌 This metadata structure is ready for future AI-assisted search and retrieval integration. Fields are captured at upload time and are consistent across all documents in the DRMS.';
+  h += '</div>';
+
+  body.innerHTML = h;
+  modal.classList.add("open");
+  document.body.classList.add("modal-open");
+}
+
+function closeMetadataModal() {
+  var modal = document.getElementById("metadata-modal");
+  if (modal) modal.classList.remove("open");
+  document.body.classList.remove("modal-open");
+}
+
+/* ===================================================================
+   DOWNLOAD HELPER
+   =================================================================== */
+
+function downloadDocument(ref) {
+  var doc = getDocByRef(ref);
+  if (!doc) { showError("Document not found."); return; }
+  if (!doc.attachments || !doc.attachments.length || !doc.attachments[0].url) {
+    showInfo("No downloadable file is attached to this document (prototype only stores uploaded files in memory).");
+    return;
+  }
+  var att = doc.attachments[0];
+  var a = document.createElement("a");
+  a.href = att.url;
+  a.download = att.name || (ref + "_document");
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 function openOCRDialog() {
@@ -6083,6 +8069,7 @@ function handleLocalUpload(input) {
   if (!file) return;
   pendingImportType = "upload";
   pendingUploadFileName = file.name;
+  pendingUploadFile = file;
   document.getElementById("upload-file-name").textContent = file.name;
   var h3 = document.querySelector("#upload-encode-modal h3");
   if (h3) h3.textContent = "Upload Complete";
@@ -6096,6 +8083,7 @@ function handleOCRUpload(input) {
   if (!file) return;
   pendingImportType = "ocr";
   pendingUploadFileName = file.name;
+  pendingUploadFile = file;
   var h3 = document.querySelector("#upload-encode-modal h3");
   if (h3) h3.textContent = "OCR Scan Complete";
   var msg = document.querySelector("#upload-encode-modal .upload-alert-msg");
@@ -6124,11 +8112,12 @@ function submitUploadEncodeChoice(autoEncode) {
   var importType = pendingImportType;
   var displayTitle =
     importType === "ocr" ? "OCR Scanned: " + fileName : "Uploaded: " + fileName;
+  var attachment = pendingUploadFile ? buildAttachmentData(pendingUploadFile) : null;
   closeUploadEncodeModal();
   if (autoEncode) {
     var today = formatDateISO(new Date());
     var ref = nextSystemReference(today);
-    DOCS.unshift({
+    var doc = {
       ref: ref,
       type: importType === "ocr" ? "OCR Scanned Document" : "Uploaded File",
       from: currentUser.name,
@@ -6144,7 +8133,14 @@ function submitUploadEncodeChoice(autoEncode) {
         importType === "ocr"
           ? "OCR extracted content placeholder for: " + fileName
           : "Local upload file: " + fileName,
-    });
+    };
+    if (attachment) {
+      doc.attachments = [cloneAttachmentData(attachment.file || attachment)];
+      if (attachment.temp) {
+        releaseAttachment(attachment);
+      }
+    }
+    DOCS.unshift(doc);
     showSuccess(
       (importType === "ocr"
         ? "OCR scanned document encoded to logbook. Ref: "
@@ -6153,9 +8149,10 @@ function submitUploadEncodeChoice(autoEncode) {
     );
     showPage("logbook");
   } else {
-    openManualLogbook(displayTitle);
+    openManualLogbook(displayTitle, attachment);
   }
   pendingUploadFileName = "";
+  pendingUploadFile = null;
   pendingImportType = "upload";
 }
 
@@ -6279,6 +8276,9 @@ function saveManualLogbook() {
     d.date = date;
     d.kind = kind;
     d.physicalCopy = physicalCopy;
+    if (currentManualUploadAttachment) {
+      d.attachments = [cloneAttachmentData(currentManualUploadAttachment.file || currentManualUploadAttachment)];
+    }
     d.lastEditedBy = currentUser.name;
 
     ensureTrail(d);
@@ -6332,6 +8332,9 @@ function saveManualLogbook() {
         timestamp: new Date().toISOString()
       });
     }
+    if (currentManualUploadAttachment) {
+      newDoc.attachments = [cloneAttachmentData(currentManualUploadAttachment.file || currentManualUploadAttachment)];
+    }
     DOCS.unshift(newDoc);
     closeManualLogbook();
     showSuccess("Manual logbook entry added with reference: " + ref);
@@ -6339,7 +8342,7 @@ function saveManualLogbook() {
   showPage("logbook");
 }
 function toggleNotif() {
-  renderOICNotifications();
+  renderNotificationPanel();
   document.getElementById("notif-panel").classList.toggle("open");
 }
 function closeNotif() {
@@ -6381,7 +8384,9 @@ function filterDocsByTab(docs, tab) {
 
 function renderIncomingTable(tab) {
   var visibleDocs = getVisibleDocumentsForRole();
-  var docs = filterDocsByTab(visibleDocs.filter(function (d) { return d.kind === "incoming"; }), tab);
+  var docs = filterDocsByTab(visibleDocs.filter(function (d) {
+    return isIncomingDocumentForUser(d, currentUser);
+  }), tab);
   var tbody = document.getElementById("incoming-tbody");
   if (!tbody) return;
   var h = "";
@@ -6392,7 +8397,12 @@ function renderIncomingTable(tab) {
       var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>' : "";
       var divFull = d.division || "";
       var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
-      h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + flowPill(d.kind) + "</td><td>" + d.type + conf + "</td><td>" + d.from + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + d.date + "</td><td>" + statusPill(d.status) + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
+      
+      // Use centralized recipient check
+      var isRecipient = isCurrentUserRecipient(d);
+      var statusDisplay = renderStatusDropdown(d.ref, d.status, isRecipient);
+      
+      h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + flowPill(d.kind) + "</td><td>" + d.type + conf + "</td><td>" + d.from + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + d.date + "</td><td>" + statusDisplay + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
     });
   }
   tbody.innerHTML = h;
@@ -6402,7 +8412,9 @@ function renderIncomingTable(tab) {
 
 function renderOutgoingTable(tab) {
   var visibleDocs = getVisibleDocumentsForRole();
-  var docs = filterDocsByTab(visibleDocs.filter(function (d) { return d.kind === "outgoing"; }), tab);
+  var docs = filterDocsByTab(visibleDocs.filter(function (d) {
+    return isOutgoingDocumentForUser(d, currentUser);
+  }), tab);
   var tbody = document.getElementById("outgoing-tbody");
   if (!tbody) return;
   var h = "";
@@ -6413,7 +8425,12 @@ function renderOutgoingTable(tab) {
       var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>' : "";
       var divFull = d.division || "";
       var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
-      h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + flowPill(d.kind) + "</td><td>" + d.type + conf + "</td><td>" + d.to + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + d.date + "</td><td>" + statusPill(d.status) + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
+      
+      // Use centralized recipient check
+      var isRecipient = isCurrentUserRecipient(d);
+      var statusDisplay = renderStatusDropdown(d.ref, d.status, isRecipient);
+      
+      h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + flowPill(d.kind) + "</td><td>" + d.type + conf + "</td><td>" + d.to + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + d.date + "</td><td>" + statusDisplay + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
     });
   }
   tbody.innerHTML = h;
@@ -6696,13 +8713,15 @@ function processOCR(imageData) {
     var language = document.getElementById("ocr-language").value;
     var autoEnhance = document.getElementById("ocr-auto-enhance").checked;
 
-    // Sample OCR result
-    var sampleText = `DEPARTMENT OF EDUCATION
+var sampleDate = formatManilaDate(new Date());
+  var sampleRef = formatDateISO(new Date());
+  // Sample OCR result
+  var sampleText = `DEPARTMENT OF EDUCATION
 Region VII - Central Visayas
 Division Office - Prototype
 
-DATE: May 14, 2026
-REFERENCE: 2026-05-042
+DATE: ${sampleDate}
+REFERENCE: ${sampleRef}
 
 SUBJECT: ENHANCED OCR SYSTEM PROTOYPE
 
@@ -7104,7 +9123,7 @@ function checkDisposalAlerts() {
 
 function checkNearDeadlines() {
   var userDocs = getVisibleDocumentsForRole();
-  var today = new Date("2026-05-14"); // System today
+  var today = new Date(); // System today
 
   var nearDeadlines = userDocs.filter((doc) => {
     if (!doc.deadline) return false;
@@ -7129,48 +9148,8 @@ function checkNearDeadlines() {
 }
 
 function updateNotificationPanelWithDeadlines() {
-  var notifPanel = document.getElementById("notif-panel");
-  if (!notifPanel) return;
-
-  var nearDeadlines = checkNearDeadlines();
-  var notifItems = notifPanel.querySelectorAll(".notif-item");
-
-  // Remove existing deadline notifications
-  notifItems.forEach((item) => {
-    var text = item.querySelector(".notif-text");
-    if (text && text.textContent.includes("deadline")) {
-      item.remove();
-    }
-  });
-
-  var notifList = notifPanel.querySelector(".notif-head");
-  nearDeadlines.forEach((doc) => {
-    var notifItem = document.createElement("div");
-    notifItem.className = "notif-item unread";
-
-    var icon = doc.daysUntilDeadline <= 2 ? "🚨" : "⚠️";
-    var urgency = doc.daysUntilDeadline <= 2 ? "High Priority" : "Reminder";
-
-    notifItem.innerHTML = `
-      <div class="notif-icon">${icon}</div>
-      <div class="notif-content">
-        <div class="notif-text"><strong>${urgency}:</strong> Document ${doc.ref} deadline in ${doc.daysUntilDeadline} days</div>
-        <div class="notif-time">${doc.subject}</div>
-      </div>
-    `;
-
-    notifItem.onclick = function () {
-      viewDoc(doc.ref);
-    };
-
-    notifPanel.insertBefore(notifItem, notifList.nextSibling);
-  });
-
-  // Update badge count
-  var currentBadge = parseInt(
-    document.getElementById("notif-badge")?.textContent || "0",
-  );
-  updateNotificationBadge(currentBadge + nearDeadlines.length);
+  // Deadline notifications are not part of the core document/communication notification list.
+  return;
 }
 
 /* ========= EXPIRED DOCUMENT NOTIFICATION SYSTEM ========= */
@@ -8305,23 +10284,31 @@ function resetReportFilters() {
 }
 
 function getDateString(date) {
-  return date.toISOString().split("T")[0];
+  return formatDateISO(date);
 }
 
 function formatDate(dateString) {
   var date = new Date(dateString);
-  return date.toLocaleDateString("en-US", {
+  if (isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-PH", {
+    timeZone: "Asia/Manila",
     year: "numeric",
     month: "long",
     day: "numeric",
-  });
+  }).format(date);
 }
 
 function formatDateISO(date) {
-  if (!(date instanceof Date) || isNaN(date.getTime())) {
+  if (!(date instanceof Date)) date = new Date(date);
+  if (isNaN(date.getTime())) {
     return "";
   }
-  return date.toISOString().split("T")[0];
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
 }
 
 function renderStatusChart() {
