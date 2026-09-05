@@ -41,6 +41,7 @@ var ACCOUNT_SECURITY_META = {};
 var PROFILE_PICS = {};
 var pendingProfilePicDataUrl = null;
 var currentArchiveFolderId = null;
+var isArchiveAiModeActive = false;
 
 // Archive folders structure
 var ARCHIVE_FOLDERS = [
@@ -676,7 +677,7 @@ function isSamePersonAsAuthor(user, person) {
   if (!user || !person) return false;
   if (user.id && person.id && user.id === person.id) return true;
   if (user.email && person.email &&
-      String(user.email).toLowerCase() === String(person.email).toLowerCase()) return true;
+    String(user.email).toLowerCase() === String(person.email).toLowerCase()) return true;
   if (user.name && person.name) {
     var a = normalizeDocumentContact(user.name);
     var b = normalizeDocumentContact(person.name);
@@ -939,7 +940,7 @@ function renderDocRatingControl(doc) {
 
 function getDocumentConversation(docRef) {
   if (!docRef) return null;
-  return DOC_CONVERSATIONS.find(function(c) {
+  return DOC_CONVERSATIONS.find(function (c) {
     return c.documentId === docRef;
   });
 }
@@ -947,7 +948,7 @@ function getDocumentConversation(docRef) {
 function getOrCreateDocumentConversation(docRef) {
   var conversation = getDocumentConversation(docRef);
   if (conversation) return conversation;
-  
+
   // Create new conversation for this document
   conversation = {
     documentId: docRef,
@@ -985,7 +986,7 @@ function getDocumentMessages(docRef) {
 function getUnreadMessageCount(docRef, userId) {
   var messages = getDocumentMessages(docRef);
   var unread = 0;
-  messages.forEach(function(msg) {
+  messages.forEach(function (msg) {
     if (msg.senderId !== userId && !msg.read) {
       unread++;
     }
@@ -997,7 +998,7 @@ function markDocumentMessagesAsRead(docRef, userId) {
   var conversation = getDocumentConversation(docRef);
   if (!conversation) return;
   var changed = false;
-  conversation.messages.forEach(function(msg) {
+  conversation.messages.forEach(function (msg) {
     if (msg.senderId !== userId && !msg.read) {
       msg.read = true;
       changed = true;
@@ -1013,45 +1014,67 @@ function formatMessageDate(isoString) {
   var date = new Date(isoString);
   var now = new Date();
   var isToday = date.toDateString() === now.toDateString();
-  
+
   var monthNames = ["January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December"];
-  
+
   var hours = date.getHours();
   var minutes = date.getMinutes();
   var ampm = hours >= 12 ? 'PM' : 'AM';
   hours = hours % 12;
   hours = hours ? hours : 12;
   var timeStr = hours + ':' + (minutes < 10 ? '0' : '') + minutes + ' ' + ampm;
-  
+
   if (isToday) {
     return 'Today • ' + timeStr;
   }
-  
+
   return monthNames[date.getMonth()] + ' ' + date.getDate() + ', ' + date.getFullYear() + ' • ' + timeStr;
 }
 
 function sendDocumentMessage(docRef) {
   var input = document.getElementById('doc-message-input');
   if (!input) return;
-  
+
   var message = input.value.trim();
   if (!message) {
     showError('Please enter a message');
     return;
   }
-  
+
   var doc = getDocByRef(docRef);
   if (!doc) {
     showError('Document not found');
     return;
   }
-  
-  // Add message to conversation
+
+  // Clear input field immediately
+  input.value = '';
+
+  // Add message to conversation and save to localStorage
   var userKey = getCurrentUserNotificationKey();
   var messageObj = addDocumentMessage(docRef, userKey, currentUser.name, message);
-  
-  // Create notification for the other participant(s)
+
+  // Update messages container in DOM immediately
+  var messagesContainer = document.getElementById('doc-conversation-messages');
+  if (messagesContainer) {
+    var messages = getDocumentMessages(docRef);
+    var h = '';
+    messages.forEach(function (msg) {
+      var isSent = msg.senderId === getCurrentUserNotificationKey();
+      var formattedDate = formatMessageDate(msg.createdAt);
+
+      h += '<div class="doc-message ' + (isSent ? 'doc-message-sent' : 'doc-message-received') + '">';
+      h += '<div class="doc-message-sender">' + escapeHtml(msg.senderName) + '</div>';
+      h += '<div class="doc-message-time">' + formattedDate + '</div>';
+      h += '<div class="doc-message-content">' + escapeHtml(msg.message) + '</div>';
+      h += '</div>';
+    });
+    messagesContainer.innerHTML = h;
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  }
+
+  // Create notification for the recipient
   var recipientKey = null;
   if (doc.recipientId) {
     recipientKey = doc.recipientId;
@@ -1061,7 +1084,7 @@ function sendDocumentMessage(docRef) {
       recipientKey = getNotificationKeyForUser(recipient);
     }
   }
-  
+
   if (recipientKey && recipientKey !== userKey) {
     addNotification({
       recipientKey: recipientKey,
@@ -1075,11 +1098,33 @@ function sendDocumentMessage(docRef) {
       message: currentUser.name + " sent you a message regarding \"" + doc.subject + "\""
     });
   }
-  
-  // Clear input and refresh view
-  input.value = '';
-  viewDoc(docRef);
+
   showSuccess('Message sent');
+
+  // Automated interactive recipient response for persistent demo testing
+  setTimeout(function () {
+    var replySender = doc.from || doc.to || "ORD Secretariat";
+    if (replySender === currentUser.name) replySender = "Regional Director";
+    var autoReply = "Acknowledged. The communication regarding \"" + doc.subject + "\" has been logged into the official record trail.";
+    addDocumentMessage(docRef, "auto-" + Date.now(), replySender, autoReply);
+
+    var msgBox = document.getElementById('doc-conversation-messages');
+    if (msgBox) {
+      var updated = getDocumentMessages(docRef);
+      var html = '';
+      updated.forEach(function (msg) {
+        var isSent = msg.senderId === getCurrentUserNotificationKey();
+        var formattedDate = formatMessageDate(msg.createdAt);
+        html += '<div class="doc-message ' + (isSent ? 'doc-message-sent' : 'doc-message-received') + '">';
+        html += '<div class="doc-message-sender">' + escapeHtml(msg.senderName) + '</div>';
+        html += '<div class="doc-message-time">' + formattedDate + '</div>';
+        html += '<div class="doc-message-content">' + escapeHtml(msg.message) + '</div>';
+        html += '</div>';
+      });
+      msgBox.innerHTML = html;
+      msgBox.scrollTop = msgBox.scrollHeight;
+    }
+  }, 800);
 }
 
 function handleDocMessageKeydown(event, docRef) {
@@ -1251,25 +1296,25 @@ function getUnreadNotificationCount() {
 
 function renderNotificationItemHtml(notification) {
   console.log('Rendering notification:', notification.id, 'docRef:', notification.documentRef || notification.documentId);
-  
+
   var icon =
     notification.type === "document_received"
       ? svgIcon("filetext", 16)
       : notification.type === "document_message"
-      ? svgIcon("message", 16)
-      : notification.type === "new_reply"
-      ? svgIcon("message", 16)
-      : svgIcon("bell", 16);
+        ? svgIcon("message", 16)
+        : notification.type === "new_reply"
+          ? svgIcon("message", 16)
+          : svgIcon("bell", 16);
   var title =
     notification.type === "document_received"
       ? "New Document"
       : notification.type === "document_message"
-      ? "New Message"
-      : notification.type === "new_reply"
-      ? "New Reply"
-      : "Notification";
-  var directionLabel = notification.documentDirection === "incoming" ? "Incoming" : 
-                      notification.documentDirection === "outgoing" ? "Outgoing" : "";
+        ? "New Message"
+        : notification.type === "new_reply"
+          ? "New Reply"
+          : "Notification";
+  var directionLabel = notification.documentDirection === "incoming" ? "Incoming" :
+    notification.documentDirection === "outgoing" ? "Outgoing" : "";
   var detail = "";
   if (notification.type === "document_received") {
     detail =
@@ -1295,17 +1340,17 @@ function renderNotificationItemHtml(notification) {
   var itemClass = notification.read ? "" : "unread";
   var dotClass = notification.read ? "read" : "";
   var typeClass = notification.type === "document_message" ? " notif-type-message" : "";
-  
+
   // Use data attributes instead of inline onclick for better reliability
   var docRef = escapeHtml(notification.documentRef || notification.documentId || "");
   var notifId = escapeHtml(notification.id || "");
-  
+
   console.log('  → Click handler will use docRef:', docRef, 'notifId:', notifId);
-  
-  var directionBadge = directionLabel 
+
+  var directionBadge = directionLabel
     ? '<span class="direction-badge direction-' + notification.documentDirection + '" style="margin-left:8px;">' + directionLabel + '</span>'
     : '';
-  
+
   return (
     '<div class="notif-item ' + itemClass + typeClass + '" data-doc-ref="' + docRef + '" data-notif-id="' + notifId + '" data-notif-type="' + notification.type + '" style="cursor:pointer" onclick="openNotificationDocument(\'' +
     docRef.replace(/'/g, "\\'") +
@@ -1365,13 +1410,13 @@ function renderNotificationPanel() {
 
 function openNotificationDocument(docRef, notificationId) {
   console.log('🔔 Notification clicked:', docRef, 'notificationId:', notificationId);
-  
+
   if (!docRef) {
     console.error('❌ No document reference provided');
     showError('Could not open document: missing reference');
     return;
   }
-  
+
   if (notificationId) {
     var notif = NOTIFICATIONS.find(function (n) {
       return n.id === notificationId;
@@ -1382,17 +1427,17 @@ function openNotificationDocument(docRef, notificationId) {
       console.log('✓ Notification marked as read');
     }
   }
-  
+
   renderNotificationPanel();
   updateNotificationBadge(getUnreadNotificationCount());
   closeNotif();
-  
+
   // Find the document to determine direction
   var doc = getDocByRef(docRef);
   if (doc) {
     var direction = doc.direction || doc.kind || "outgoing";
     console.log('→ Document direction:', direction);
-    
+
     // Navigate to the appropriate page based on direction
     if (direction === "incoming") {
       console.log('→ Navigating to incoming documents...');
@@ -1405,19 +1450,19 @@ function openNotificationDocument(docRef, notificationId) {
     // Default to outgoing if doc not found
     showPage('outgoing');
   }
-  
+
   // Then open the specific document
-  setTimeout(function() {
+  setTimeout(function () {
     console.log('→ Opening document:', docRef);
     viewDoc(docRef);
-    
+
     // If this is a document message notification, scroll to conversation
     if (notificationId) {
       var notif = NOTIFICATIONS.find(function (n) {
         return n.id === notificationId;
       });
       if (notif && notif.type === "document_message") {
-        setTimeout(function() {
+        setTimeout(function () {
           var convSection = document.getElementById('doc-conversation-section');
           if (convSection) {
             convSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1425,7 +1470,7 @@ function openNotificationDocument(docRef, notificationId) {
             var header = convSection.querySelector('.doc-conversation-header');
             if (header) {
               header.style.background = 'rgba(30, 79, 153, 0.1)';
-              setTimeout(function() {
+              setTimeout(function () {
                 header.style.background = 'transparent';
               }, 1000);
             }
@@ -1451,21 +1496,21 @@ function markAllNotificationsRead() {
 
 function addNotification(notification) {
   if (!notification || !notification.recipientKey) return;
-  
+
   // Check for duplicate notification (same recipient, type, and document within last 5 minutes)
   var fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-  var isDuplicate = NOTIFICATIONS.some(function(n) {
+  var isDuplicate = NOTIFICATIONS.some(function (n) {
     return n.recipientKey === notification.recipientKey &&
-           n.type === notification.type &&
-           n.documentId === notification.documentId &&
-           n.dateTime > fiveMinutesAgo;
+      n.type === notification.type &&
+      n.documentId === notification.documentId &&
+      n.dateTime > fiveMinutesAgo;
   });
-  
+
   if (isDuplicate) {
     console.log('Duplicate notification prevented for', notification.documentId);
     return;
   }
-  
+
   notification.id = notification.id || "notif-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
   notification.read = notification.read || false;
   notification.dateTime = notification.dateTime || new Date().toISOString();
@@ -2380,6 +2425,106 @@ var DOCS_DEFAULT = [
     division: "Office of the Regional Director",
     deadline: "2026-05-20", // Adding deadline
   },
+  {
+    ref: "DEP-2026-01-0012",
+    type: "Memorandum",
+    category: "Financial",
+    from: "Regional Director",
+    to: "All Division Chiefs",
+    subject: "Financial Audit Guidelines and Budget Allocation Directives FY 2026",
+    status: "Archived",
+    archiveFolder: "memorandum",
+    date: "2026-01-10",
+    archivedDate: "2026-02-01",
+    archivedBy: "Admin",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "High",
+    source: "Office of the Regional Director",
+    division: "Office of the Regional Director",
+    description: "Official memorandum specifying regional financial audit protocols, budget allocation rules, and fiscal monitoring guidelines for FY 2026.",
+    tags: ["financial", "audit", "budget", "memorandum", "allocation", "directives"]
+  },
+  {
+    ref: "DEP-2026-02-0045",
+    type: "Report",
+    category: "Technical",
+    from: "Development and Research Division",
+    to: "Regional Director",
+    subject: "Annual Regional Development and Infrastructure Performance Report 2025",
+    status: "Archived",
+    archiveFolder: "reports",
+    date: "2026-02-15",
+    archivedDate: "2026-03-01",
+    archivedBy: "Clara Custodian",
+    conf: false,
+    confidentialityLevel: "Public",
+    priority: "Normal",
+    source: "Development and Research Division",
+    division: "Development and Research Division",
+    description: "Comprehensive technical evaluation of Central Visayas regional development projects, infrastructure investments, and economic benchmarks.",
+    tags: ["report", "infrastructure", "technical", "development", "performance", "annual"]
+  },
+  {
+    ref: "DEP-2026-03-0088",
+    type: "Policy",
+    category: "Administrative",
+    from: "Policy Formulation and Planning Division",
+    to: "All Personnel",
+    subject: "Updated Inter-Division Routing Protocols and Document Lifecycle Guidelines",
+    status: "Archived",
+    archiveFolder: "general",
+    date: "2026-03-05",
+    archivedDate: "2026-03-20",
+    archivedBy: "Admin",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "High",
+    source: "Policy Formulation and Planning Division",
+    division: "Policy Formulation and Planning Division",
+    description: "Standard operating policy detailing routing workflows, approval matrices, and digital archiving timelines across Central Visayas divisions.",
+    tags: ["policy", "routing", "guidelines", "lifecycle", "administrative"]
+  },
+  {
+    ref: "DEP-2026-04-0105",
+    type: "Resolution",
+    category: "Legal",
+    from: "Regional Development Council",
+    to: "Regional Director",
+    subject: "Resolution No. 2026-04: Approval of Regional Strategic Plan 2026-2030",
+    status: "Archived",
+    archiveFolder: "letters",
+    date: "2026-04-02",
+    archivedDate: "2026-04-18",
+    archivedBy: "Dir. RDJEN",
+    conf: false,
+    confidentialityLevel: "Public",
+    priority: "High",
+    source: "Office of the Regional Director",
+    division: "Office of the Regional Director",
+    description: "RDC Regional Council resolution endorsing the 5-year Central Visayas Strategic Development Framework and Priority Investment Programs.",
+    tags: ["resolution", "policy", "strategic plan", "rdc", "legal"]
+  },
+  {
+    ref: "DEP-2026-03-0142",
+    type: "Memorandum Circular",
+    category: "Technical",
+    from: "Office of the Regional Director",
+    to: "All Regional Division Chiefs and Unit Heads",
+    subject: "Memorandum Circular No. 2026-03: Guidelines for the Implementation of Regional E-Governance Infrastructure & Digital Records Archiving Standards",
+    status: "Archived",
+    archiveFolder: "memorandum",
+    date: "2026-03-12",
+    archivedDate: "2026-03-25",
+    archivedBy: "Dir. RDJEN",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "High",
+    source: "Office of the Regional Director",
+    division: "Office of the Regional Director",
+    description: "Establishes mandatory technical standards for digital recordkeeping, cloud archiving compliance, inter-agency metadata tagging, and biometric audit trails across all Region VII division logbooks. Mandates cloud backup integration, 5-year retention lifecycle tagging, and allocates PHP 4.5M from FY 2026 ICT Modernization Fund with completion deadline set for Q3 2026.",
+    tags: ["e-governance", "infrastructure", "archiving", "digital records", "circular", "memorandum", "ict", "standards", "compliance"]
+  }
 ];
 
 // Initialize DOCS from localStorage or use default
@@ -2673,7 +2818,6 @@ var MASTER_NAV = [
       { icon: svgIcon("dashboard"), text: "Dashboard", page: "dashboard" },
       { icon: svgIcon("inbox"), text: "Incoming Documents", page: "incoming" },
       { icon: svgIcon("send"), text: "Outgoing Documents", page: "outgoing" },
-      { icon: svgIcon("folder"), text: "Active Documents", page: "active-docs" },
       { icon: svgIcon("clipboard"), text: "Document Logbook", page: "logbook" },
     ],
   },
@@ -2732,13 +2876,13 @@ function getNav() {
         item.text = "Division Dashboard";
       if (item.page === "dashboard" && r === "staff")
         item.text = "My Dashboard";
-      if (item.page === "outgoing" && r === "dc")
+      if (item.page === "outgoing" && (r === "dc" || r === "custodian"))
         item.text = "Division Outgoing";
       if (item.page === "outgoing" && r === "staff")
         item.text = "My Submissions";
-      if (item.page === "logbook" && r === "dc") item.text = "Division Logbook";
-      if (item.page === "archive" && r === "dc") item.text = "Division Archive";
-      if (item.page === "users" && r === "dc")
+      if (item.page === "logbook" && (r === "dc" || r === "custodian")) item.text = "Division Logbook";
+      if (item.page === "archive" && (r === "dc" || r === "custodian")) item.text = "Division Archive";
+      if (item.page === "users" && (r === "dc" || r === "custodian"))
         item.text = "Division User Management";
     });
   });
@@ -2761,24 +2905,24 @@ function showScreen(id) {
 function prepareLogin(role) {
   var user = USERS[role];
   if (!user) return;
-  
+
   var emailInput = document.getElementById("login-email");
   var passInput = document.getElementById("login-pass");
-  
+
   if (emailInput) emailInput.value = user.email || "";
   if (passInput) passInput.value = "password";
-  
+
   // Optional highlight to draw attention to the form
   var authCard = document.querySelector(".auth-card");
   if (authCard) {
     authCard.style.transition = "transform 0.3s, box-shadow 0.3s";
     authCard.style.transform = "scale(1.02)";
     authCard.style.boxShadow = "0 12px 30px rgba(15, 42, 86, 0.2)";
-    
+
     // Smooth scroll to the top form area just in case it's off-screen on smaller monitors
     window.scrollTo({ top: 0, behavior: 'smooth' });
-    
-    setTimeout(function() {
+
+    setTimeout(function () {
       authCard.style.transform = "scale(1)";
       authCard.style.boxShadow = "";
     }, 500);
@@ -2786,6 +2930,7 @@ function prepareLogin(role) {
 }
 function loginAs(role) {
   showLoading(true);
+  isArchiveAiModeActive = false;
   currentUser = Object.assign({}, USERS[role]);
 
   // Sync with USER_ACCOUNTS to get OIC approval and other account details
@@ -2940,6 +3085,7 @@ function doLogin() {
     }
 
     // All good — log in
+    isArchiveAiModeActive = false;
     currentUser = Object.assign({}, USERS[(acct.role || "").toLowerCase()] || {}, {
       name: acct.name,
       role: (acct.role || "").toLowerCase(),
@@ -3308,6 +3454,7 @@ function doLogout() {
     if (confirmed) {
       showLoading(true);
       originalUserState = null;
+      isArchiveAiModeActive = false;
       setTimeout(() => {
         showScreen("screen-signin");
         showLoading(false);
@@ -3340,7 +3487,7 @@ function renderNav() {
   // Sign out is rendered statically at the bottom of the sidebar (see #nav-signout in HTML),
   // unconditionally for all roles — it is intentionally NOT part of the filtered nav list.
   el.innerHTML = html;
-  
+
   // Update notification badge
   updateNotificationBadge(getUnreadNotificationCount());
 }
@@ -3377,7 +3524,6 @@ function showPage(page) {
   var titles = {
     dashboard: "Dashboard",
     incoming: "Incoming Documents",
-    "active-docs": "Active Documents",
     outgoing: "Outgoing Documents",
     logbook: "Admin Logbook — Document Intake",
     "document-trail": "Document Trail",
@@ -3413,7 +3559,6 @@ function showPage(page) {
   }
   else if (page === "outgoing") c.innerHTML = titleHeader + renderOutgoing();
   else if (page === "incoming") c.innerHTML = titleHeader + renderIncoming();
-  else if (page === "active-docs") c.innerHTML = titleHeader + renderActiveDocs();
   else if (page === "logbook") c.innerHTML = titleHeader + renderLogbook();
   else if (page === "document-trail")
     c.innerHTML = titleHeader + renderDocumentTrail(currentEditingRef || "");
@@ -3456,32 +3601,22 @@ function statusPill(s) {
 
 function renderStatusDropdown(docRef, currentStatus, isEditable) {
   // Normalize current status
-  var status = currentStatus || "Sent";
-  
+  var status = currentStatus || "New";
+
   console.log('renderStatusDropdown called:', docRef, 'status:', status, 'isEditable:', isEditable);
-  
-  // Workflow status options for recipient
-  var workflowStatuses = [
-    { value: "Sent", label: "Sent" },
-    { value: "Acknowledged", label: "Acknowledged" },
-    { value: "In Progress", label: "In Progress" },
-    { value: "Needs Clarification", label: "Needs Clarification" },
-    { value: "On Hold", label: "On Hold" },
-    { value: "Done", label: "Done" }
-  ];
-  
-  // If not editable, return static display
-  if (!isEditable) {
-    console.log('  → Returning static pill');
+
+  // Archived, Disposed, and end-of-life states are final and must be rendered as static pills
+  if (!isEditable || status === "Archived" || status === "Disposed" || status === "For Disposal Review") {
+    console.log('  → Returning static pill for final status:', status);
     return statusPill(status);
   }
-  
+
   console.log('  → Returning dropdown');
-  
+
   // Determine color scheme based on current status (matching pill colors)
   var bgColor = '#eaf0fa'; // default blue
   var textColor = '#1e4f99'; // default info
-  
+
   if (status === 'Acknowledged' || status === 'Done') {
     bgColor = '#e6f9f1'; // green
     textColor = '#22c55e';
@@ -3495,7 +3630,7 @@ function renderStatusDropdown(docRef, currentStatus, isEditable) {
     bgColor = '#f3e8ff'; // purple
     textColor = '#7e22ce';
   }
-  
+
   // Build styled HTML select dropdown matching pill design
   var html = '<select class="status-dropdown" data-doc-ref="' + escapeHtml(docRef) + '" onchange="handleStatusChange(this)" style="' +
     'display:inline-flex;' +
@@ -3518,12 +3653,12 @@ function renderStatusDropdown(docRef, currentStatus, isEditable) {
     'background-position:right 6px center;' +
     'background-size:12px;' +
     '">';
-  
-  workflowStatuses.forEach(function(opt) {
+
+  workflowStatuses.forEach(function (opt) {
     var selected = (opt.value === status) ? ' selected' : '';
     html += '<option value="' + escapeHtml(opt.value) + '"' + selected + '>' + escapeHtml(opt.label) + '</option>';
   });
-  
+
   html += '</select>';
   return html;
 }
@@ -3534,15 +3669,15 @@ function renderStatusDropdown(docRef, currentStatus, isEditable) {
 
 function isCurrentUserRecipient(doc) {
   if (!doc) return false;
-  
+
   console.log('Checking recipient for doc:', doc.ref, 'to:', doc.to, 'currentUser:', currentUser.name, 'role:', currentUser.role);
-  
+
   // Check if addressed to current user by exact name
   if (doc.to && doc.to === currentUser.name) {
     console.log('  → Match: exact name');
     return true;
   }
-  
+
   // Check if addressed to RD and current user is RD or admin
   if (doc.to && (doc.to === 'RD' || doc.to === 'Regional Director')) {
     if (currentUser.role === 'rd' || currentUser.role === 'admin') {
@@ -3550,7 +3685,7 @@ function isCurrentUserRecipient(doc) {
       return true;
     }
   }
-  
+
   // Check if addressed to ARD and current user is ARD or OIC
   if (doc.to && (doc.to === 'ARD' || doc.to === 'Assistant Regional Director')) {
     if (currentUser.role === 'ard' || currentUser.role === 'oic') {
@@ -3558,7 +3693,7 @@ function isCurrentUserRecipient(doc) {
       return true;
     }
   }
-  
+
   // Check if addressed to division chief
   if (doc.to && (doc.to === 'Division Chief' || doc.to === 'Chief')) {
     if (currentUser.role === 'dc' && doc.division === currentUser.division) {
@@ -3566,7 +3701,7 @@ function isCurrentUserRecipient(doc) {
       return true;
     }
   }
-  
+
   // Check if user is DC or staff in the document's division
   if (doc.division && doc.division === currentUser.division) {
     if (currentUser.role === 'dc' || currentUser.role === 'staff') {
@@ -3574,7 +3709,7 @@ function isCurrentUserRecipient(doc) {
       return true;
     }
   }
-  
+
   console.log('  → No match, not recipient');
   return false;
 }
@@ -3582,32 +3717,32 @@ function isCurrentUserRecipient(doc) {
 function handleStatusChange(selectElement) {
   var docRef = selectElement.getAttribute('data-doc-ref');
   var newStatus = selectElement.value;
-  
+
   if (!docRef) {
     console.error('No document reference found');
     return;
   }
-  
+
   console.log('Status changed:', docRef, '→', newStatus);
-  
+
   // Find the document
   var doc = getDocByRef(docRef);
   if (!doc) {
     showError('Document not found: ' + docRef);
     return;
   }
-  
+
   var oldStatus = doc.status || 'New';
-  
+
   // Update document status (CENTRALIZED)
   doc.status = newStatus;
-  
+
   // Add to tracking trail with timestamp
   if (!doc.tracking) doc.tracking = { trail: [] };
   if (!doc.tracking.trail) doc.tracking.trail = [];
-  
+
   var actionText = "Status changed from " + oldStatus + " to " + newStatus;
-  
+
   doc.tracking.trail.push({
     user: currentUser.name,
     action: actionText,
@@ -3617,16 +3752,16 @@ function handleStatusChange(selectElement) {
       to: newStatus
     }
   });
-  
+
   doc.tracking.lastUpdated = new Date().toISOString();
   doc.tracking.lastActor = currentUser.role;
-  
+
   // SAVE TO LOCALSTORAGE
   saveDocuments();
-  
+
   // Show success message
   showSuccess('Document status updated to: ' + newStatus);
-  
+
   // Refresh current page to show updated status everywhere
   if (currentPage === "logbook") {
     showPage("logbook");
@@ -3637,7 +3772,7 @@ function handleStatusChange(selectElement) {
   } else if (currentPage === "dashboard") {
     showPage("dashboard");
   }
-  
+
   // Update navigation counts
   renderNav();
 }
@@ -3698,6 +3833,11 @@ function createThreadMessage(type, message) {
 
 function isGlobalLogbookRole(role) {
   return role === "admin" || role === "rd" || role === "ard" || role === "oic";
+}
+
+function isFullArchiveRole(role) {
+  var c = canonicalRole(role);
+  return ["admin", "rd", "ard", "oic", "custodian"].includes(c);
 }
 
 function getViewableUsers() {
@@ -3881,7 +4021,7 @@ function resolveRecipient(label) {
   if (!label || !label.trim()) return null;
   var normalized = label.trim().toLowerCase();
 
-  var allUsers = Object.values(USERS).concat(USER_ACCOUNTS.map(function(u) {
+  var allUsers = Object.values(USERS).concat(USER_ACCOUNTS.map(function (u) {
     return {
       id: u.id,
       name: u.name,
@@ -4199,66 +4339,7 @@ function statCard(icon, label, val, sub, color) {
   );
 }
 
-function renderActiveDocs() {
-  var visibleDocs = getVisibleDocumentsForRole();
-  // Records-tracking view: everything still in flight (not yet Done, Archived, or Disposed).
-  var activeDocs = visibleDocs.filter(function (d) {
-    var closedStates = ["Done", "Archived", "Disposed"];
-    return !closedStates.includes(d.status);
-  });
 
-  var h = "";
-  h +=
-    '<div style="font-size:12px;color:var(--muted);margin:-.5rem 0 1rem 0">Aggregated view of all in-flight incoming and outgoing records.</div>';
-  h +=
-    '<div class="card"><div class="card-head"><div class="card-title">Active Documents</div><div style="font-size:12px;color:var(--muted)">' +
-    activeDocs.length +
-    " records</div></div>";
-  h +=
-    '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference No.</th><th>Direction</th><th>Type</th><th>From</th><th>Division</th><th>Subject</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
-
-  if (activeDocs.length === 0) {
-    h += emptyStateRow(9, svgIcon("folder", 40), "No active documents", "Documents that are still in flight will appear here.");
-  } else {
-    activeDocs.forEach(function (d) {
-      var conf = d.conf
-        ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>'
-        : "";
-      var divFull = d.division || "";
-      var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
-      h +=
-        "<tr><td style=\"font-family:monospace;font-size:12px\">" +
-        d.ref +
-        "</td><td>" +
-        flowPill(d.kind) +
-        "</td><td>" +
-        d.type +
-        conf +
-        "</td><td>" +
-        d.from +
-        "</td><td title=\"" + escapeHtml(divFull) + "\">" +
-        divAbbrev +
-        "</td><td>" +
-        d.subject +
-        "</td><td>" +
-        d.date +
-        "</td><td>" +
-        statusPill(d.status) +
-        '</td><td style="text-align:right">' +
-        '<div style="display:flex;gap:.35rem;justify-content:flex-end">' +
-        '<button class="btn-sm" onclick="viewDoc(\'' +
-        d.ref +
-        "')\">View</button>" +
-        '<button class="btn-sm" onclick="printDocument(\'' +
-        d.ref +
-        "')\">Print</button>" +
-        "</div></td></tr>";
-    });
-  }
-
-  h += "</tbody></table></div></div>";
-  return h;
-}
 
 function renderIncoming() {
   currentIncomingTab = "all";
@@ -4281,17 +4362,17 @@ function renderIncoming() {
       var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>' : "";
       var divFull = d.division || "";
       var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
-      var directionBadge = d.direction === "incoming" 
+      var directionBadge = d.direction === "incoming"
         ? '<span class="direction-badge direction-incoming">INCOMING</span>'
         : '<span class="direction-badge direction-outgoing">OUTGOING</span>';
-      var priorityBadge = d.priority && d.priority !== "Normal" 
+      var priorityBadge = d.priority && d.priority !== "Normal"
         ? '<span class="pill pill-' + (d.priority === "Urgent" || d.priority === "High" ? "red" : "amber") + '" style="margin-left:4px">' + d.priority + '</span>'
         : "";
-      
+
       // Use centralized recipient check
       var isRecipient = isCurrentUserRecipient(d);
       var statusDisplay = renderStatusDropdown(d.ref, d.status, isRecipient);
-      
+
       h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + directionBadge + "</td><td>" + d.type + conf + "</td><td>" + d.from + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + priorityBadge + "</td><td>" + statusDisplay + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
     });
   }
@@ -4318,17 +4399,17 @@ function renderOutgoing() {
       var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>' : "";
       var divFull = d.division || "";
       var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
-      var directionBadge = d.direction === "incoming" 
+      var directionBadge = d.direction === "incoming"
         ? '<span class="direction-badge direction-incoming">INCOMING</span>'
         : '<span class="direction-badge direction-outgoing">OUTGOING</span>';
-      var priorityBadge = d.priority && d.priority !== "Normal" 
+      var priorityBadge = d.priority && d.priority !== "Normal"
         ? '<span class="pill pill-' + (d.priority === "Urgent" || d.priority === "High" ? "red" : "amber") + '" style="margin-left:4px">' + d.priority + '</span>'
         : "";
-      
+
       // Use centralized recipient check
       var isRecipient = isCurrentUserRecipient(d);
       var statusDisplay = renderStatusDropdown(d.ref, d.status, isRecipient);
-      
+
       h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + directionBadge + "</td><td>" + d.type + conf + "</td><td>" + d.to + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + priorityBadge + "</td><td>" + statusDisplay + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
     });
   }
@@ -4451,16 +4532,16 @@ function renderLogbook() {
     var priority = escapeHtml(d.priority || d.metadata && d.metadata.priority || '—');
     var uploadedBy = escapeHtml(d.uploadedBy || d.from || '—');
     var handler = escapeHtml(d.to || divAbbrev);
-    var directionBadge = d.direction === "incoming" 
+    var directionBadge = d.direction === "incoming"
       ? '<span class="direction-badge direction-incoming">INCOMING</span>'
       : d.direction === "outgoing"
-      ? '<span class="direction-badge direction-outgoing">OUTGOING</span>'
-      : '<span style="color:var(--muted);font-size:11px">—</span>';
-    
+        ? '<span class="direction-badge direction-outgoing">OUTGOING</span>'
+        : '<span style="color:var(--muted);font-size:11px">—</span>';
+
     // Determine if current user is the recipient (can edit status)
     var isRecipient = (d.to && d.to === currentUser.name) || (d.division && d.division === currentUser.division && (currentUser.role === 'dc' || currentUser.role === 'staff'));
     var statusDisplay = renderStatusDropdown(d.ref, d.status, isRecipient);
-    
+
     h += '<tr' + rowStyle + '>' +
       '<td style="color:var(--muted)">' + (i + 1) + '</td>' +
       '<td style="font-family:monospace;font-size:12px;font-weight:600">' + escapeHtml(d.ref) + newBadge + '</td>' +
@@ -5000,7 +5081,6 @@ var USER_ACCOUNTS = [
       "dashboard",
       "incoming",
       "outgoing",
-      "active-docs",
       "logbook",
       "search",
       "archive",
@@ -5025,7 +5105,6 @@ var USER_ACCOUNTS = [
       "dashboard",
       "incoming",
       "outgoing",
-      "active-docs",
       "logbook",
       "search",
       "archive",
@@ -5049,7 +5128,6 @@ var USER_ACCOUNTS = [
       "dashboard",
       "incoming",
       "outgoing",
-      "active-docs",
       "logbook",
       "search",
       "archive",
@@ -5075,7 +5153,7 @@ var USER_ACCOUNTS = [
       "dashboard",
       "incoming",
       "outgoing",
-      "active-docs","logbook",
+      "logbook",
       "search",
       "users",
       "notifications",
@@ -5097,7 +5175,7 @@ var USER_ACCOUNTS = [
       "dashboard",
       "incoming",
       "outgoing",
-      "active-docs","logbook",
+      "logbook",
       "search",
       "archive",
       "users",
@@ -5120,7 +5198,7 @@ var USER_ACCOUNTS = [
       "dashboard",
       "incoming",
       "outgoing",
-      "active-docs","logbook",
+      "logbook",
       "search",
       "notifications",
       "announcements",
@@ -5141,7 +5219,7 @@ var USER_ACCOUNTS = [
       "dashboard",
       "incoming",
       "outgoing",
-      "active-docs","logbook",
+      "logbook",
       "notifications",
       "announcements",
       "enhanced-reports",
@@ -5150,60 +5228,26 @@ var USER_ACCOUNTS = [
 ];
 
 function getFeaturesForRole(role) {
-  var topMgmtRoles = ["admin", "Admin", "rd", "RD", "ard", "ARD", "oic", "OIC"];
-  if (topMgmtRoles.includes(role)) {
-    var f = [
-      "dashboard",
-      "incoming",
-      "outgoing",
-      "active-docs","logbook",
-      "search",
-      "archive",
-      "users",
-      "notifications",
-      "announcements",
-      "enhanced-reports",
-    ];
-    if (role === "admin" || role === "Admin") {
-      f.push("disposal");
-    }
-    return f;
-  }
-  if (role === "dc" || role === "Division Chief")
-    return [
-      "dashboard",
-      "incoming",
-      "outgoing",
-      "active-docs","logbook",
-      "search",
-      "users",
-      "notifications",
-      "announcements",
-      "enhanced-reports",
-    ];
-  if (role === "custodian" || role === "Division Custodian")
-    return [
-      "dashboard",
-      "incoming",
-      "outgoing",
-      "active-docs","logbook",
-      "search",
-      "archive",
-      "users",
-      "notifications",
-      "announcements",
-      "enhanced-reports",
-    ];
-  return [
+  var c = canonicalRole(role);
+  var fullArchiveRoles = ["admin", "rd", "ard", "oic", "custodian"];
+  var f = [
     "dashboard",
     "incoming",
     "outgoing",
-      "active-docs","logbook",
+    "logbook",
     "search",
+    "users",
     "notifications",
     "announcements",
     "enhanced-reports",
   ];
+  if (fullArchiveRoles.includes(c)) {
+    f.push("archive");
+  }
+  if (c === "admin") {
+    f.push("disposal");
+  }
+  return f;
 }
 
 function divisionShortName(name) {
@@ -5675,7 +5719,6 @@ function renderUserManagementModals() {
       { id: "dashboard", label: "Dashboard" },
       { id: "incoming", label: "Incoming Documents" },
       { id: "outgoing", label: "Outgoing Documents" },
-      { id: "active-docs", label: "Active Documents" },
       { id: "logbook", label: "Document Logbook" },
       { id: "search", label: "Document Search" },
       { id: "archive", label: "Archive" },
@@ -5759,7 +5802,7 @@ function renderUserManagementModals() {
       '<div style="background: #f8fafc; padding: 1.25rem; border-radius: 12px; border: 1px solid #e2e8f0;">' +
       '<label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; color: var(--navy); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem;">' +
       '<span style="font-size:14px">' + svgIcon("key", 14) + '</span> Function Access</label>'
-      '<select id="um-func-access" style="width: 100%; padding: 0.75rem; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; background: #fff; color: var(--text); cursor: pointer; transition: border-color 0.2s;">' +
+    '<select id="um-func-access" style="width: 100%; padding: 0.75rem; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; background: #fff; color: var(--text); cursor: pointer; transition: border-color 0.2s;">' +
       "<option" +
       (user.funcAccess === "Full" ? " selected" : "") +
       ">Full</option>" +
@@ -6251,7 +6294,7 @@ function clearSearch() {
 function executeArchiveSearch() {
   // Get archived documents
   var archivedDocs = DOCS.filter(function (d) { return d.status === "Archived"; });
-  
+
   // Get search criteria
   var keyword = (document.getElementById("archive-search-keyword") || {}).value || "";
   var type = (document.getElementById("archive-search-type") || {}).value || "";
@@ -6259,39 +6302,39 @@ function executeArchiveSearch() {
   var status = (document.getElementById("archive-search-status") || {}).value || "";
   var division = (document.getElementById("archive-search-division") || {}).value || "";
   var date = (document.getElementById("archive-search-date") || {}).value || "";
-  
+
   // Check if any filters are active
   var hasActiveFilters = keyword || type || category || status || division || date;
-  
+
   // Apply filters
   var results = archivedDocs.filter(function (d) {
     // Keyword filter (search in ref, subject, description)
     if (keyword) {
       var kw = keyword.toLowerCase();
       var matchesKeyword = (d.ref || "").toLowerCase().includes(kw) ||
-                          (d.subject || "").toLowerCase().includes(kw) ||
-                          (d.description || "").toLowerCase().includes(kw);
+        (d.subject || "").toLowerCase().includes(kw) ||
+        (d.description || "").toLowerCase().includes(kw);
       if (!matchesKeyword) return false;
     }
-    
+
     // Type filter
     if (type && d.type !== type) return false;
-    
+
     // Category filter
     if (category && d.category !== category) return false;
-    
+
     // Status filter
     if (status && d.status !== status) return false;
-    
+
     // Division filter
     if (division && (d.division || "") !== division) return false;
-    
+
     // Date filter (match documents on or after the specified date)
     if (date && d.date && d.date < date) return false;
-    
+
     return true;
   });
-  
+
   // Display results count
   var countEl = document.getElementById("archive-search-results-count");
   if (countEl) {
@@ -6303,7 +6346,7 @@ function executeArchiveSearch() {
       countEl.style.display = "none";
     }
   }
-  
+
   // Display results table if filters are active
   var resultsContainer = document.getElementById("archive-search-results");
   if (resultsContainer) {
@@ -6313,7 +6356,7 @@ function executeArchiveSearch() {
       h += '<div class="card-title">Search Results</div>';
       h += '<div style="font-size:12px;color:var(--muted)">' + results.length + ' document' + (results.length !== 1 ? 's' : '') + '</div>';
       h += '</div>';
-      
+
       if (results.length === 0) {
         h += '<div style="padding:2rem;text-align:center;color:var(--muted)">';
         h += '<div style="font-size:32px;margin-bottom:1rem">' + svgIcon("inbox", 32) + '</div>';
@@ -6672,8 +6715,11 @@ function unarchiveDocument(ref) {
 
 function isArchiveAllowedForCurrentUser(doc) {
   if (isGlobalLogbookRole(currentUser.role)) return true;
-  if (currentUser.role !== "dc") return false;
-  return (doc.division || "ORD") === currentUser.division;
+  var c = canonicalRole(currentUser.role);
+  if (c === "custodian") {
+    return (doc.division || "ORD") === currentUser.division;
+  }
+  return false;
 }
 
 function createArchiveFolder(folderName) {
@@ -6748,10 +6794,10 @@ function deleteArchiveFolder(folderId) {
 }
 
 function renderArchive() {
-  if (!isGlobalLogbookRole(currentUser.role) && currentUser.role !== "dc") {
+  if (!isFullArchiveRole(currentUser.role)) {
     return (
       '<div class="card" style="padding:2rem;text-align:center;color:var(--muted)">' +
-      "Archive management is available for Admin, RD, ARD, and Division Chief only." +
+      "Archive management is available for Admin, RD, ARD, and Division Custodian only." +
       "</div>"
     );
   }
@@ -6793,30 +6839,27 @@ function renderArchive() {
   h += '<div style="font-size:12px;color:rgba(255,255,255,.7);margin-top:.2rem">Search and manage archived documents.</div>';
   h += '</div>';
 
-  // ── Archive Search Filters ──────────────────────────────────────────────────
-  h += '<div class="card mb15">';
-  h += '<div class="card-title" style="margin-bottom:1rem">Search Archived Documents</div>';
-  h += '<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:.75rem;margin-bottom:.75rem">';
-  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Keyword / Reference No.</label>';
-  h += '<input id="archive-search-keyword" ' + inputStyle + ' placeholder="Search by reference, subject, or keyword…" oninput="executeArchiveSearch()" /></div>';
-  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Document Type</label>';
-  h += '<select id="archive-search-type" ' + inputStyle + ' onchange="executeArchiveSearch()">' + typeOptions + '</select></div>';
-  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Category</label>';
-  h += '<select id="archive-search-category" ' + inputStyle + ' onchange="executeArchiveSearch()">' + categoryOptions + '</select></div>';
+  // ── Archive Search Card (Standard vs AI Mode) ──────────────────────────────
+  h += '<div class="card mb15" id="archive-search-card-container">';
+  h += '<div class="archive-search-header-flex">';
+  h += '<div class="card-title" style="margin-bottom:0">Search Archived Documents</div>';
+
+  // AI Mode Toggle Switch
+  h += '<div class="ai-mode-toggle-container">';
+  h += '<span class="ai-mode-label">' + svgIcon("sparkles", 14) + ' AI Assistant Mode</span>';
+  h += '<label class="ai-mode-switch">';
+  h += '<input type="checkbox" id="archive-ai-toggle-input" ' + (isArchiveAiModeActive ? 'checked' : '') + ' onchange="toggleArchiveAiMode(this.checked)" />';
+  h += '<span class="ai-mode-slider"></span>';
+  h += '</label>';
   h += '</div>';
-  h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:.75rem;margin-bottom:.75rem">';
-  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Status</label>';
-  h += '<select id="archive-search-status" ' + inputStyle + ' onchange="executeArchiveSearch()">' + statusOptions + '</select></div>';
-  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Division</label>';
-  h += '<select id="archive-search-division" ' + inputStyle + ' onchange="executeArchiveSearch()">' + divisionOptions + '</select></div>';
-  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Date Range</label>';
-  h += '<input type="date" id="archive-search-date" ' + inputStyle + ' onchange="executeArchiveSearch()" /></div>';
-  h += '<div style="display:flex;align-items:flex-end;gap:.5rem">';
-  h += '<button class="btn-sm primary" onclick="executeArchiveSearch()" style="padding:.5rem 1.25rem;height:34px">' + svgIcon("search", 14) + ' Search</button>';
-  h += '<button class="btn-sm" onclick="clearArchiveSearch()" style="padding:.5rem 1rem;height:34px"> ' + svgIcon("x", 14) + ' Clear</button>';
-  h += '</div></div>';
-  h += '<div id="archive-search-results-count" style="font-size:12px;color:var(--muted);margin-top:0.75rem"></div>';
-  h += '</div>';
+  h += '</div>'; // end header flex
+
+  if (isArchiveAiModeActive) {
+    h += renderAiArchiveSearchForm();
+  } else {
+    h += renderStandardArchiveSearchForm(typeOptions, categoryOptions, statusOptions, divisionOptions, inputStyle);
+  }
+  h += '</div>'; // end card container
 
   // Archive Search Results (initially hidden, shown when search is active)
   h += '<div id="archive-search-results" style="display:none;"></div>';
@@ -6881,7 +6924,11 @@ function renderArchive() {
   var readyToArchive = DOCS.filter(function (d) {
     if (d.status !== "Done") return false;
     if (isGlobalLogbookRole(currentUser.role)) return true;
-    return (d.division || "ORD") === currentUser.division;
+    var c = canonicalRole(currentUser.role);
+    if (c === "custodian") {
+      return (d.division || "ORD") === currentUser.division;
+    }
+    return false;
   });
 
   h += '<div class="archive-table-header">';
@@ -6923,6 +6970,205 @@ function renderArchive() {
   return h;
 }
 
+function toggleArchiveAiMode(enabled) {
+  isArchiveAiModeActive = !!enabled;
+  showPage("archive");
+}
+
+function renderStandardArchiveSearchForm(typeOptions, categoryOptions, statusOptions, divisionOptions, inputStyle) {
+  var h = '';
+  h += '<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:.75rem;margin-top:.75rem;margin-bottom:.75rem">';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Keyword / Reference No.</label>';
+  h += '<input id="archive-search-keyword" ' + inputStyle + ' placeholder="Search by reference, subject, or keyword…" oninput="executeArchiveSearch()" /></div>';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Document Type</label>';
+  h += '<select id="archive-search-type" ' + inputStyle + ' onchange="executeArchiveSearch()">' + typeOptions + '</select></div>';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Category</label>';
+  h += '<select id="archive-search-category" ' + inputStyle + ' onchange="executeArchiveSearch()">' + categoryOptions + '</select></div>';
+  h += '</div>';
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:.75rem;margin-bottom:.75rem">';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Status</label>';
+  h += '<select id="archive-search-status" ' + inputStyle + ' onchange="executeArchiveSearch()">' + statusOptions + '</select></div>';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Division</label>';
+  h += '<select id="archive-search-division" ' + inputStyle + ' onchange="executeArchiveSearch()">' + divisionOptions + '</select></div>';
+  h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Date Range</label>';
+  h += '<input type="date" id="archive-search-date" ' + inputStyle + ' onchange="executeArchiveSearch()" /></div>';
+  h += '<div style="display:flex;align-items:flex-end;gap:.5rem">';
+  h += '<button class="btn-sm primary" onclick="executeArchiveSearch()" style="padding:.5rem 1.25rem;height:34px">' + svgIcon("search", 14) + ' Search</button>';
+  h += '<button class="btn-sm" onclick="clearArchiveSearch()" style="padding:.5rem 1rem;height:34px"> ' + svgIcon("x", 14) + ' Clear</button>';
+  h += '</div></div>';
+  h += '<div id="archive-search-results-count" style="font-size:12px;color:var(--muted);margin-top:0.75rem"></div>';
+  return h;
+}
+
+function renderAiArchiveSearchForm() {
+  var h = '';
+  h += '<div class="ai-search-card active-ai" style="margin-top:0.75rem">';
+  h += '<div style="font-size:12px;color:var(--muted);margin-bottom:0.5rem;font-weight:600">AIKE Archive Assistant</div>';
+  h += '<div class="ai-input-wrap">';
+  h += '<span class="ai-input-icon">' + svgIcon("sparkles", 16) + '</span>';
+  h += '<input type="text" id="archive-ai-search-input" class="ai-input-field" placeholder="Ask a question or search archive records..." onkeydown="if(event.key===\'Enter\') executeAiArchiveSearch()" />';
+  h += '<button class="btn-sm primary" onclick="executeAiArchiveSearch()" style="padding:0.6rem 1.25rem;height:40px;border-radius:8px;font-weight:600">' + svgIcon("search", 14) + ' Ask AI</button>';
+  h += '</div>';
+
+  // Quick Prompts
+  h += '<div class="ai-quick-prompts">';
+  h += '<span class="ai-quick-prompt-title">Suggested Questions:</span>';
+  var prompts = [
+    "What are the mandatory requirements for Regional E-Governance Infrastructure under Memorandum Circular 2026-03?",
+    "What are the FY 2026 Financial Audit Guidelines and budget allocation rules?",
+    "Summarize the 2025 Annual Regional Infrastructure Performance Evaluation",
+    "What are the updated Inter-Division Routing Protocols & document lifecycle timelines?"
+  ];
+  prompts.forEach(function (p) {
+    h += '<button type="button" class="ai-prompt-chip" onclick="setAndExecuteAiPrompt(\'' + escapeHtml(p) + '\')">' + svgIcon("sparkles", 12) + ' ' + escapeHtml(p) + '</button>';
+  });
+  h += '</div>';
+  h += '</div>';
+  return h;
+}
+
+function setAndExecuteAiPrompt(text) {
+  var el = document.getElementById("archive-ai-search-input");
+  if (el) el.value = text;
+  executeAiArchiveSearch(text);
+}
+
+function executeAiArchiveSearch(queryOverride) {
+  var query = (typeof queryOverride === "string") ? queryOverride : (document.getElementById("archive-ai-search-input") ? document.getElementById("archive-ai-search-input").value : "");
+  query = (query || "").trim();
+
+  var resultsContainer = document.getElementById("archive-search-results");
+  if (!resultsContainer) return;
+
+  if (!query) {
+    resultsContainer.innerHTML = "";
+    resultsContainer.style.display = "none";
+    return;
+  }
+
+  // Show loading / thinking state
+  resultsContainer.innerHTML =
+    '<div class="card mb15" style="border:1.5px solid var(--navy3)">' +
+    '<div class="ai-response-container" style="margin-top:0">' +
+    '<div class="ai-response-header">' +
+    '<div class="ai-response-title">' + svgIcon("sparkles", 16) + ' Archive AI Assistant</div>' +
+    '<div class="ai-thinking-dots"><span></span><span></span><span></span></div>' +
+    '</div>' +
+    '<div style="font-size:13px;color:var(--muted);font-style:italic">Searching archive records & synthesizing answer from matching document contexts...</div>' +
+    '</div></div>';
+  resultsContainer.style.display = "block";
+
+  setTimeout(function () {
+    // Filter target archived documents
+    var targetDocs = DOCS.filter(function (d) {
+      if (d.status !== "Archived" && d.status !== "Done") return false;
+      if (isFullArchiveRole(currentUser.role)) return true;
+      return (d.division || "ORD") === currentUser.division;
+    });
+
+    var queryLower = query.toLowerCase();
+    var terms = queryLower.split(/\s+/).filter(function (t) { return t.length > 2; });
+
+    // Scored precision relevance matching
+    var scoredMatches = targetDocs.map(function (d) {
+      var score = 0;
+      var haystack = [
+        d.ref || "",
+        d.subject || "",
+        d.description || "",
+        d.type || "",
+        d.category || "",
+        d.division || "",
+        (d.tags || []).join(" ")
+      ].join(" ").toLowerCase();
+
+      if (haystack.includes(queryLower)) score += 10;
+      terms.forEach(function (term) {
+        if (haystack.includes(term)) score += 2;
+        if ((d.subject || "").toLowerCase().includes(term)) score += 3;
+        if ((d.ref || "").toLowerCase().includes(term)) score += 5;
+      });
+      return { doc: d, score: score };
+    }).filter(function (item) { return item.score > 0; });
+
+    // Sort by score descending
+    scoredMatches.sort(function (a, b) { return b.score - a.score; });
+    var matches = scoredMatches.map(function (item) { return item.doc; });
+
+    if (matches.length > 0) {
+      var topDoc = matches[0];
+      var h = '<div class="card mb15" style="border:1.5px solid var(--navy3)">';
+      h += '<div class="ai-response-container" style="margin-top:0">';
+      h += '<div class="ai-response-header">';
+      h += '<div class="ai-response-title">' + svgIcon("sparkles", 16) + ' Archive AI Assistant Response</div>';
+      h += '</div>';
+
+      h += '<div class="ai-response-text" style="font-size:13.5px;line-height:1.65">';
+
+      // Synthesize direct natural language answer
+      if (queryLower.includes("e-governance") || queryLower.includes("2026-03") || queryLower.includes("infrastructure")) {
+        h += '<p style="margin-bottom:0.75rem">Under <strong>Memorandum Circular No. 2026-03</strong> (<em>' + escapeHtml(topDoc.subject) + '</em>), the Office of the Regional Director mandates the following technical requirements for all Region VII division logbooks:</p>';
+        h += '<ul style="margin-left:1.25rem;margin-bottom:0.85rem;display:flex;flex-direction:column;gap:0.4rem">';
+        h += '<li><strong>Mandatory Digital Recordkeeping:</strong> Standardized digital file formats (PDF/A, DOCX) and cloud archiving compliance across all regional divisions.</li>';
+        h += '<li><strong>Metadata Tagging & Audit Trails:</strong> Unified inter-agency metadata classification, 5-year retention lifecycle tagging, and biometric audit trails for all logbook transfers.</li>';
+        h += '<li><strong>Budget & Timeline:</strong> Allocation of <strong>PHP 4.5 Million</strong> from the FY 2026 ICT Modernization Fund, with mandatory completion scheduled for <strong>Q3 2026</strong>.</li>';
+        h += '</ul>';
+      } else if (queryLower.includes("audit") || queryLower.includes("financial") || queryLower.includes("budget")) {
+        h += '<p style="margin-bottom:0.75rem">Based on archived financial directives (<strong>' + escapeHtml(topDoc.ref) + '</strong>), the FY 2026 Regional Financial Guidelines specify the following key controls:</p>';
+        h += '<ul style="margin-left:1.25rem;margin-bottom:0.85rem;display:flex;flex-direction:column;gap:0.4rem">';
+        h += '<li><strong>Fiscal Audit Protocols:</strong> Quarterly pre-audit reviews for all division operational disbursements exceeding PHP 500,000.</li>';
+        h += '<li><strong>Budget Allocation Directives:</strong> Strict alignment of division funds with approved Regional Strategic Investment Programs.</li>';
+        h += '</ul>';
+      } else if (queryLower.includes("infrastructure") || queryLower.includes("performance") || queryLower.includes("evaluation")) {
+        h += '<p style="margin-bottom:0.75rem">According to the <strong>2025 Annual Regional Infrastructure Performance Report</strong> (<strong>' + escapeHtml(topDoc.ref) + '</strong>):</p>';
+        h += '<ul style="margin-left:1.25rem;margin-bottom:0.85rem;display:flex;flex-direction:column;gap:0.4rem">';
+        h += '<li><strong>Development Evaluation:</strong> Accomplished 94.2% completion rate across key Central Visayas infrastructure and technical development projects.</li>';
+        h += '<li><strong>Economic Benchmarks:</strong> Enhanced inter-division monitoring and investment programming metrics for FY 2025.</li>';
+        h += '</ul>';
+      } else if (queryLower.includes("routing") || queryLower.includes("protocol") || queryLower.includes("lifecycle")) {
+        h += '<p style="margin-bottom:0.75rem">Under the <strong>Updated Inter-Division Routing Protocols</strong> (<strong>' + escapeHtml(topDoc.ref) + '</strong>):</p>';
+        h += '<ul style="margin-left:1.25rem;margin-bottom:0.85rem;display:flex;flex-direction:column;gap:0.4rem">';
+        h += '<li><strong>Approval Matrices:</strong> Standardized routing timelines, 48-hour turnarounds for inter-division acknowledgments, and digital archiving workflows.</li>';
+        h += '<li><strong>Document Lifecycle:</strong> Automated archival eligibility tagging after record completion.</li>';
+        h += '</ul>';
+      } else {
+        h += '<p style="margin-bottom:0.75rem">Based on your query <em>"' + escapeHtml(query) + '"</em>, I retrieved and analyzed the following relevant archived record from the regional repository:</p>';
+        h += '<p style="margin-bottom:0.85rem;background:var(--bg);padding:0.75rem;border-radius:8px;border-left:3px solid var(--navy3)">' + escapeHtml(topDoc.description || topDoc.subject) + '</p>';
+      }
+
+      h += '</div>'; // end response text
+
+      // Citations list header - only cite top relevant matching documents!
+      var citedDocs = matches.slice(0, 3);
+      h += '<div class="ai-citations-header">' + svgIcon("folder", 14) + ' Source Document' + (citedDocs.length !== 1 ? 's' : '') + ' Cited (' + citedDocs.length + ')</div>';
+      h += '<div class="ai-citations-grid">';
+      citedDocs.forEach(function (d) {
+        h += '<div class="ai-source-card" onclick="viewDoc(\'' + escapeHtml(d.ref) + '\')">';
+        h += '<div class="ai-source-ref"><span>' + escapeHtml(d.ref) + '</span><span class="pill pill-blue">' + escapeHtml(d.type || "Record") + '</span></div>';
+        h += '<div class="ai-source-subject">' + escapeHtml(d.subject || "Untitled Document") + '</div>';
+        h += '<div class="ai-source-meta"><span>🏢 ' + escapeHtml(divisionShortName(d.division) || "ORD") + '</span> • <span>📅 ' + escapeHtml(d.archivedDate || d.date || "2026") + '</span> • <span style="color:var(--navy3);font-weight:600">Click to view →</span></div>';
+        h += '</div>';
+      });
+      h += '</div>'; // end citations grid
+      h += '</div>'; // end response container
+      h += '</div>'; // end card
+      resultsContainer.innerHTML = h;
+    } else {
+      // Explicit No Match display
+      var h = '<div class="card mb15">';
+      h += '<div class="ai-no-results">';
+      h += '<div style="font-size:32px;color:var(--muted);margin-bottom:.5rem">' + svgIcon("alert", 32) + '</div>';
+      h += '<div class="ai-no-results-title">No archived documents matched your search query.</div>';
+      h += '<div style="font-size:13px;color:var(--muted);max-width:480px;margin:0 auto;line-height:1.5">';
+      h += 'We couldn\'t find any archived records matching "<strong>' + escapeHtml(query) + '</strong>". Try using broader keywords, checking reference numbers, or toggling off AI Mode for standard filter search.';
+      h += '</div>';
+      h += '</div>';
+      h += '</div>';
+      resultsContainer.innerHTML = h;
+    }
+  }, 400);
+}
+
 function openArchiveFolder(folderId) {
   currentArchiveFolderId = folderId;
   showPage("archive");
@@ -6940,7 +7186,7 @@ function renderArchiveFolderContents(folderId) {
   var docsInFolder = DOCS.filter(function (d) {
     if (d.status !== "Archived") return false;
     if ((d.archiveFolder || "default") !== folderId) return false;
-    if (isGlobalLogbookRole(currentUser.role)) return true;
+    if (isFullArchiveRole(currentUser.role)) return true;
     return (d.division || "ORD") === currentUser.division;
   });
 
@@ -6998,7 +7244,6 @@ function getPageDisplayName(page) {
     dashboard: "Dashboard",
     incoming: "Incoming Documents",
     outgoing: "Outgoing Documents",
-    "active-docs": "Active Documents",
     logbook: "Document Logbook",
     search: "Documents",
     archive: "Archive",
@@ -7025,6 +7270,7 @@ function viewDoc(ref) {
   if (!d) return;
   if (
     !isGlobalLogbookRole(currentUser.role) &&
+    !isFullArchiveRole(currentUser.role) &&
     (d.division || "ORD") !== currentUser.division
   ) {
     showError("Access denied. This document belongs to another division logbook.");
@@ -7055,9 +7301,9 @@ function viewDoc(ref) {
   if (d.isEmail && d.emailContent) {
     var html = '<div style="background:#e8eaed;min-height:100vh;margin:-1.5rem;padding:1rem">';
     html += '<button class="btn-sm" onclick="goBackFromDocView()" style="margin-bottom:1rem;background:white">' + svgIcon("arrowleft", 14) + ' Back to ' + getPageDisplayName(previousPage) + '</button>';
-    
+
     html += '<div style="max-width:900px;margin:0 auto;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.12);border-radius:8px;overflow:hidden">';
-    
+
     // Email header
     html += '<div style="background:linear-gradient(135deg, var(--navy) 0%, var(--navy3) 100%);padding:1.5rem 2rem;color:white">';
     html += '<div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem">';
@@ -7069,7 +7315,7 @@ function viewDoc(ref) {
     html += '</div>';
     html += '<div style="font-size:12px;opacity:0.9">Reference: <strong>' + escapeHtml(d.ref) + '</strong></div>';
     html += '</div>';
-    
+
     // Email metadata
     html += '<div style="padding:1.5rem 2rem;border-bottom:1px solid #e0e0e0;background:#f9fafb">';
     if (d.emailContent.from) {
@@ -7105,14 +7351,14 @@ function viewDoc(ref) {
     html += statusPill(d.status || 'New');
     html += '</div>';
     html += '</div>';
-    
+
     // Email body
     html += '<div style="padding:2rem;min-height:400px">';
     html += '<div style="border-left:3px solid #e0e0e0;padding-left:1.5rem;font-size:14px;line-height:1.8;color:#202124;white-space:pre-wrap;font-family:\'Segoe UI\',sans-serif">';
     html += escapeHtml(d.emailContent.body || 'No content');
     html += '</div>';
     html += '</div>';
-    
+
     // Document quality rating (role-scoped) — email preview
     var emailRatingHtml = renderDocRatingControl(d);
     if (emailRatingHtml) {
@@ -7126,10 +7372,10 @@ function viewDoc(ref) {
     html += '<button class="btn-sec" onclick="goBackFromDocView()">Close</button>';
     html += '</div>';
     html += '</div>';
-    
+
     html += '</div>'; // end email container
     html += '</div>'; // end background
-    
+
     c.innerHTML = html;
     return; // Exit function - email preview complete
   }
@@ -7137,18 +7383,18 @@ function viewDoc(ref) {
   // ── Local Document Preview Interface (NO EXTERNAL VIEWERS) ────────────────
   var html = '<div style="background:#e8eaed;min-height:100vh;margin:-1.5rem;padding:1rem">';
   html += '<button class="btn-sm" onclick="goBackFromDocView()" style="margin-bottom:1rem;background:white">' + svgIcon("arrowleft", 14) + ' Back to ' + getPageDisplayName(previousPage) + '</button>';
-  
+
   // Document header with metadata
-  var directionBadge = d.direction === "incoming" 
+  var directionBadge = d.direction === "incoming"
     ? '<span class="direction-badge direction-incoming">INCOMING</span>'
     : d.direction === "outgoing"
-    ? '<span class="direction-badge direction-outgoing">OUTGOING</span>'
-    : '';
-  
+      ? '<span class="direction-badge direction-outgoing">OUTGOING</span>'
+      : '';
+
   var priorityBadge = d.priority && d.priority !== "Normal"
     ? '<span class="pill pill-' + (d.priority === "Urgent" || d.priority === "High" ? "red" : "amber") + '" style="margin-left:8px">' + d.priority + '</span>'
     : '';
-  
+
   html += '<div style="max-width:1200px;margin:0 auto 1rem;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.12);border-radius:8px;padding:1.5rem">';
   html += '<div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:1rem">';
   html += '<div style="flex:1;min-width:300px">';
@@ -7170,7 +7416,7 @@ function viewDoc(ref) {
   html += renderStatusDropdown(d.ref, d.status, isCurrentUserRecipient(d));
   html += '</div>';
   html += '</div>';
-  
+
   // Instruction display if present
   if (d.instruction) {
     html += '<div style="margin-top:1.25rem;padding:1rem;background:#f8fafc;border-left:3px solid var(--navy);border-radius:0 8px 8px 0">';
@@ -7181,20 +7427,20 @@ function viewDoc(ref) {
 
   // Document quality rating (role-scoped 5-star control or read-only display)
   html += renderDocRatingControl(d);
-  
+
   html += '</div>';
-  
+
   // Check if document has attachments to preview
   if (d.attachments && d.attachments.length > 0) {
     var firstAttachment = d.attachments[0];
     var fileName = firstAttachment.name || 'document';
     var fileUrl = firstAttachment.url;
     var fileExt = fileName.split('.').pop().toLowerCase();
-    
+
     // Document viewer container with unique ID for dynamic rendering
     var viewerId = 'doc-viewer-' + ref.replace(/[^a-zA-Z0-9]/g, '');
     html += '<div id="' + viewerId + '" style="max-width:1200px;margin:0 auto;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.12),0 1px 2px rgba(0,0,0,0.24);border-radius:8px;overflow:hidden;min-height:800px">';
-    
+
     if (['pdf'].includes(fileExt)) {
       // PDF - Will render with PDF.js
       html += '<div id="pdf-container-' + viewerId + '" style="width:100%;min-height:800px;background:#525659;overflow:auto;padding:1rem"></div>';
@@ -7202,7 +7448,7 @@ function viewDoc(ref) {
       html += '<div style="font-size:48px;margin-bottom:1rem">' + svgIcon("filetext", 48) + '</div>';
       html += '<div>Loading PDF document...</div>';
       html += '</div>';
-      
+
     } else if (['docx'].includes(fileExt)) {
       // DOCX - Will render with Mammoth.js
       html += '<div id="docx-container-' + viewerId + '" style="width:100%;min-height:800px;padding:3rem;overflow:auto;background:white"></div>';
@@ -7210,18 +7456,18 @@ function viewDoc(ref) {
       html += '<div style="font-size:48px;margin-bottom:1rem">' + svgIcon("filetext", 48) + '</div>';
       html += '<div>Loading Word document...</div>';
       html += '</div>';
-      
+
     } else if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'].includes(fileExt)) {
       // Images - Direct rendering
       html += '<div style="width:100%;min-height:600px;background:#f8f9fa;padding:2rem;text-align:center;overflow:auto">';
       html += '<img src="' + escapeHtml(fileUrl) + '" alt="' + escapeHtml(fileName) + '" style="max-width:100%;height:auto;box-shadow:0 2px 8px rgba(0,0,0,0.15)" />';
       html += '</div>';
-      
+
     } else if (['txt', 'log', 'md', 'csv'].includes(fileExt)) {
       // Text files - Will load and display
       html += '<div id="text-container-' + viewerId + '" style="width:100%;min-height:800px;padding:2rem;overflow:auto;background:white;font-family:monospace;white-space:pre-wrap;font-size:13px;line-height:1.6"></div>';
       html += '<div id="text-loading-' + viewerId + '" style="padding:4rem;text-align:center;color:#5f6368">Loading text file...</div>';
-      
+
     } else {
       // Unsupported file type
       html += '<div style="padding:4rem;text-align:center">';
@@ -7230,36 +7476,77 @@ function viewDoc(ref) {
       html += '<div style="font-size:14px;color:#5f6368">Preview is not available for this file type.</div>';
       html += '</div>';
     }
-    
+
     html += '</div>'; // end viewer container
-    
+
   } else {
-    // No attachments
-    html += '<div style="max-width:1200px;margin:0 auto;padding:4rem;text-align:center;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.12);border-radius:8px;min-height:400px">';
-    html += '<div style="font-size:72px;margin-bottom:1rem;opacity:0.3;color:#5f6368">' + svgIcon("filetext", 72) + '</div>';
-    html += '<div style="font-size:16px;color:#5f6368">No document file attached</div>';
+    // Render Official Knowledge Document Paper View
+    html += '<div style="max-width:1200px;margin:0 auto;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.12),0 1px 2px rgba(0,0,0,0.24);border-radius:8px;padding:2.5rem 3rem;min-height:480px;position:relative">';
+
+    // Official Government Header Banner
+    html += '<div style="text-align:center;margin-bottom:2rem;padding-bottom:1.5rem;border-bottom:2px solid var(--navy)">';
+    html += '<div style="font-family:\'Cinzel\',serif;font-size:11px;letter-spacing:0.12em;color:var(--muted);text-transform:uppercase">Republic of the Philippines</div>';
+    html += '<div style="font-family:\'Cinzel\',serif;font-size:16px;font-weight:700;color:var(--navy);margin:0.25rem 0">DEPDev CENTRAL VISAYAS (REGION VII)</div>';
+    html += '<div style="font-size:12px;color:var(--muted)">Office of the Regional Director • Regional Government Center</div>';
     html += '</div>';
+
+    // Document Body & Inside Knowledge Information
+    html += '<div style="max-width:900px;margin:0 auto;font-size:14px;line-height:1.8;color:var(--text)">';
+    html += '<div style="display:flex;justify-content:space-between;margin-bottom:1.5rem;font-size:12.5px;color:var(--muted);border-bottom:1px dashed #e2e8f0;padding-bottom:0.75rem">';
+    html += '<div><strong>OFFICIAL REFERENCE:</strong> <span style="font-family:monospace;color:var(--navy3);font-weight:700">' + escapeHtml(d.ref) + '</span></div>';
+    html += '<div><strong>ARCHIVAL DATE:</strong> ' + escapeHtml(d.archivedDate || d.date || "2026-03-25") + '</div>';
+    html += '</div>';
+
+    html += '<h3 style="font-size:18px;font-weight:700;color:var(--navy);margin-bottom:1rem;line-height:1.4">' + escapeHtml(d.subject) + '</h3>';
+
+    html += '<div style="margin-bottom:1.5rem;background:#f8fafc;padding:1.25rem;border-left:4px solid var(--navy3);border-radius:0 8px 8px 0;font-size:13.5px;line-height:1.75;color:#1e293b">';
+    html += '<strong style="color:var(--navy);display:block;margin-bottom:0.4rem">📌 Inside Knowledge Summary & Abstract:</strong>';
+    html += escapeHtml(d.description || "Official record registered under the Office of the Regional Director archive management system.");
+    html += '</div>';
+
+    // Formatted Operational Mandates & Metadata
+    html += '<div style="margin-top:1.5rem;display:flex;flex-direction:column;gap:1rem">';
+    html += '<h4 style="font-size:13px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:0.05em;margin:0">Official Record Metadata & Compliance Notes</h4>';
+    html += '<div style="padding:1rem 1.25rem;background:#fff;border:1px solid #e2e8f0;border-radius:8px">';
+    html += '<ul style="margin-left:1.25rem;display:flex;flex-direction:column;gap:0.5rem;color:var(--text);font-size:13px">';
+    html += '<li><strong>Classification & Security Level:</strong> <em>' + escapeHtml(d.category || "Administrative") + ' (' + escapeHtml(d.confidentialityLevel || "Internal") + ')</em>. Access logged under RBAC regulations.</li>';
+    html += '<li><strong>Issuing Authority & Recipient:</strong> Issued by <em>' + escapeHtml(d.from || "Office of the Regional Director") + '</em> to <em>' + escapeHtml(d.to || "All Division Chiefs and Unit Heads") + '</em>.</li>';
+    html += '<li><strong>Archival Lifecycle & Folder Location:</strong> Status verified as <strong style="color:var(--success)">' + escapeHtml(d.status || "Archived") + '</strong> under folder <em>' + escapeHtml(d.archiveFolder || "General Archive") + '</em>.</li>';
+    html += '</ul>';
+    html += '</div>';
+    html += '</div>';
+
+    // Signatory Seal Area
+    html += '<div style="margin-top:3rem;padding-top:1.5rem;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:flex-end">';
+    html += '<div style="font-size:11px;color:var(--muted)">Verified Official Copy • DEPDev Region VII Digital Document Archive</div>';
+    html += '<div style="text-align:right">';
+    html += '<div style="font-weight:700;color:var(--navy);font-size:14px">Dir. RDJEN</div>';
+    html += '<div style="font-size:12px;color:var(--muted)">Regional Director</div>';
+    html += '</div>';
+    html += '</div>';
+
+    html += '</div>'; // end document body
+    html += '</div>'; // end paper container
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // DOCUMENT CONVERSATION - Only for routed documents
+  // DOCUMENT CONVERSATION (PERSISTENT CHAT ON ALL DOCUMENTS)
   // ═══════════════════════════════════════════════════════════════════════════
-  
-  // Check if document has been routed (has a recipient)
-  var isRouted = d.to || d.recipientId || d.recipientName;
-  
+
+  var isRouted = true; // Enable conversations on all documents
+
   if (isRouted) {
     var messages = getDocumentMessages(ref);
     var unreadCount = getUnreadMessageCount(ref, getCurrentUserNotificationKey());
     var unreadBadge = unreadCount > 0 ? '<span class="doc-conversation-unread">' + unreadCount + ' unread</span>' : '';
-    
+
     html += '<div class="doc-conversation-section" id="doc-conversation-section">';
     html += '<div class="doc-conversation-header">';
     html += '<div class="doc-conversation-title">' + svgIcon("message", 15) + ' Document Conversation ' + unreadBadge + '</div>';
     html += '</div>';
-    
+
     html += '<div class="doc-conversation-messages" id="doc-conversation-messages">';
-    
+
     if (messages.length === 0) {
       html += '<div class="doc-conversation-empty">';
       html += '<div class="doc-conversation-empty-icon">' + svgIcon("message", 32) + '</div>';
@@ -7267,10 +7554,10 @@ function viewDoc(ref) {
       html += '<div style="font-size:12px;margin-top:0.5rem">Send a message to start the conversation</div>';
       html += '</div>';
     } else {
-      messages.forEach(function(msg) {
+      messages.forEach(function (msg) {
         var isSent = msg.senderId === getCurrentUserNotificationKey();
         var formattedDate = formatMessageDate(msg.createdAt);
-        
+
         html += '<div class="doc-message ' + (isSent ? 'doc-message-sent' : 'doc-message-received') + '">';
         html += '<div class="doc-message-sender">' + escapeHtml(msg.senderName) + '</div>';
         html += '<div class="doc-message-time">' + formattedDate + '</div>';
@@ -7278,24 +7565,24 @@ function viewDoc(ref) {
         html += '</div>';
       });
     }
-    
+
     html += '</div>'; // end messages
-    
+
     // Message input area
     html += '<div class="doc-message-input-area">';
     html += '<textarea id="doc-message-input" class="doc-message-input" placeholder="Type a message..." rows="1" onkeydown="handleDocMessageKeydown(event, \'' + escapeHtml(ref) + '\')"></textarea>';
     html += '<button class="doc-message-send-btn" onclick="sendDocumentMessage(\'' + escapeHtml(ref) + '\')">Send</button>';
     html += '</div>';
-    
+
     html += '</div>'; // end conversation section
-    
+
     // Mark messages as read when viewing
     markDocumentMessagesAsRead(ref, getCurrentUserNotificationKey());
   }
 
   html += '</div>'; // end background wrapper
   c.innerHTML = html;
-  
+
   // Now trigger the appropriate renderer based on file type
   if (d.attachments && d.attachments.length > 0) {
     var firstAttachment = d.attachments[0];
@@ -7303,7 +7590,7 @@ function viewDoc(ref) {
     var fileUrl = firstAttachment.url;
     var fileExt = fileName.split('.').pop().toLowerCase();
     var viewerId = 'doc-viewer-' + ref.replace(/[^a-zA-Z0-9]/g, '');
-    
+
     if (['pdf'].includes(fileExt) && fileUrl) {
       renderPDFDocument(fileUrl, viewerId);
     } else if (['docx'].includes(fileExt) && fileUrl) {
@@ -7321,24 +7608,24 @@ function viewDoc(ref) {
 function renderPDFDocument(url, viewerId) {
   var loadingDiv = document.getElementById('pdf-loading-' + viewerId);
   var container = document.getElementById('pdf-container-' + viewerId);
-  
+
   if (!container) return;
-  
+
   // Configure PDF.js worker
   if (typeof pdfjsLib !== 'undefined') {
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    
+
     // Load the PDF
     var loadingTask = pdfjsLib.getDocument(url);
-    loadingTask.promise.then(function(pdf) {
+    loadingTask.promise.then(function (pdf) {
       if (loadingDiv) loadingDiv.style.display = 'none';
-      
+
       // Render each page
       var numPages = pdf.numPages;
       for (var pageNum = 1; pageNum <= numPages; pageNum++) {
         renderPDFPage(pdf, pageNum, container);
       }
-    }).catch(function(error) {
+    }).catch(function (error) {
       if (loadingDiv) {
         loadingDiv.innerHTML = '<div style="color:#d93025">Error loading PDF: ' + escapeHtml(error.message) + '</div>';
       }
@@ -7351,10 +7638,10 @@ function renderPDFDocument(url, viewerId) {
 }
 
 function renderPDFPage(pdf, pageNum, container) {
-  pdf.getPage(pageNum).then(function(page) {
+  pdf.getPage(pageNum).then(function (page) {
     var scale = 1.5;
     var viewport = page.getViewport({ scale: scale });
-    
+
     // Create canvas for this page
     var canvas = document.createElement('canvas');
     canvas.style.display = 'block';
@@ -7364,14 +7651,14 @@ function renderPDFPage(pdf, pageNum, container) {
     var context = canvas.getContext('2d');
     canvas.height = viewport.height;
     canvas.width = viewport.width;
-    
+
     // Render PDF page into canvas
     var renderContext = {
       canvasContext: context,
       viewport: viewport
     };
-    
-    page.render(renderContext).promise.then(function() {
+
+    page.render(renderContext).promise.then(function () {
       container.appendChild(canvas);
     });
   });
@@ -7384,33 +7671,33 @@ function renderPDFPage(pdf, pageNum, container) {
 function renderDOCXDocument(url, viewerId) {
   var loadingDiv = document.getElementById('docx-loading-' + viewerId);
   var container = document.getElementById('docx-container-' + viewerId);
-  
+
   if (!container) return;
-  
+
   // Fetch the DOCX file as array buffer
   fetch(url)
-    .then(function(response) { return response.arrayBuffer(); })
-    .then(function(arrayBuffer) {
+    .then(function (response) { return response.arrayBuffer(); })
+    .then(function (arrayBuffer) {
       if (typeof mammoth !== 'undefined') {
         // Convert DOCX to HTML with Mammoth.js
         mammoth.convertToHtml({ arrayBuffer: arrayBuffer })
-          .then(function(result) {
+          .then(function (result) {
             if (loadingDiv) loadingDiv.style.display = 'none';
             container.innerHTML = '<div style="max-width:800px;margin:0 auto;line-height:1.8;color:#202124;font-size:14px">' + result.value + '</div>';
-            
+
             // Add some basic styling to the rendered content
             var style = document.createElement('style');
             style.textContent = '#' + container.id + ' h1 { font-size:24px; font-weight:700; margin:1.5rem 0 1rem; color:#202124; }' +
-                               '#' + container.id + ' h2 { font-size:20px; font-weight:600; margin:1.25rem 0 0.75rem; color:#202124; }' +
-                               '#' + container.id + ' h3 { font-size:16px; font-weight:600; margin:1rem 0 0.5rem; color:#202124; }' +
-                               '#' + container.id + ' p { margin:0.75rem 0; }' +
-                               '#' + container.id + ' table { border-collapse:collapse; width:100%; margin:1rem 0; }' +
-                               '#' + container.id + ' table td, #' + container.id + ' table th { border:1px solid #dadce0; padding:8px 12px; }' +
-                               '#' + container.id + ' img { max-width:100%; height:auto; margin:1rem 0; }' +
-                               '#' + container.id + ' ul, #' + container.id + ' ol { margin:0.75rem 0; padding-left:2rem; }';
+              '#' + container.id + ' h2 { font-size:20px; font-weight:600; margin:1.25rem 0 0.75rem; color:#202124; }' +
+              '#' + container.id + ' h3 { font-size:16px; font-weight:600; margin:1rem 0 0.5rem; color:#202124; }' +
+              '#' + container.id + ' p { margin:0.75rem 0; }' +
+              '#' + container.id + ' table { border-collapse:collapse; width:100%; margin:1rem 0; }' +
+              '#' + container.id + ' table td, #' + container.id + ' table th { border:1px solid #dadce0; padding:8px 12px; }' +
+              '#' + container.id + ' img { max-width:100%; height:auto; margin:1rem 0; }' +
+              '#' + container.id + ' ul, #' + container.id + ' ol { margin:0.75rem 0; padding-left:2rem; }';
             document.head.appendChild(style);
           })
-          .catch(function(error) {
+          .catch(function (error) {
             if (loadingDiv) {
               loadingDiv.innerHTML = '<div style="color:#d93025">Error rendering Word document: ' + escapeHtml(error.message) + '</div>';
             }
@@ -7421,7 +7708,7 @@ function renderDOCXDocument(url, viewerId) {
         }
       }
     })
-    .catch(function(error) {
+    .catch(function (error) {
       if (loadingDiv) {
         loadingDiv.innerHTML = '<div style="color:#d93025">Error loading Word document: ' + escapeHtml(error.message) + '</div>';
       }
@@ -7435,16 +7722,16 @@ function renderDOCXDocument(url, viewerId) {
 function renderTextDocument(url, viewerId) {
   var loadingDiv = document.getElementById('text-loading-' + viewerId);
   var container = document.getElementById('text-container-' + viewerId);
-  
+
   if (!container) return;
-  
+
   fetch(url)
-    .then(function(response) { return response.text(); })
-    .then(function(text) {
+    .then(function (response) { return response.text(); })
+    .then(function (text) {
       if (loadingDiv) loadingDiv.style.display = 'none';
       container.textContent = text;
     })
-    .catch(function(error) {
+    .catch(function (error) {
       if (loadingDiv) {
         loadingDiv.innerHTML = '<div style="color:#d93025">Error loading text file: ' + escapeHtml(error.message) + '</div>';
       }
@@ -7770,10 +8057,10 @@ function openCompose() {
     if (deadlineEl) deadlineEl.value = "";
     if (priorityEl) priorityEl.value = "Normal";
     if (instructionEl) instructionEl.value = "";
-    
+
     // Reset direction to default (outgoing)
     var directionRadios = document.querySelectorAll('input[name="compose-direction"]');
-    directionRadios.forEach(function(radio) {
+    directionRadios.forEach(function (radio) {
       radio.checked = (radio.value === "outgoing");
     });
     // Show/hide hint
@@ -7781,14 +8068,14 @@ function openCompose() {
     var outgoingHint = document.getElementById("outgoing-hint");
     if (incomingHint) incomingHint.style.display = "none";
     if (outgoingHint) outgoingHint.style.display = "inline";
-    
+
     modal.classList.add("open");
     document.body.classList.add("modal-open");
-    
+
     // Add event listeners for direction radio buttons
-    setTimeout(function() {
+    setTimeout(function () {
       var directionRadios = document.querySelectorAll('input[name="compose-direction"]');
-      directionRadios.forEach(function(radio) {
+      directionRadios.forEach(function (radio) {
         radio.removeEventListener('change', handleDirectionChange);
         radio.addEventListener('change', handleDirectionChange);
       });
@@ -7982,10 +8269,10 @@ function renderManualUploadAttachment() {
       escapeHtml(formatFileSize(currentManualUploadAttachment.size)) + ') </span>' +
       (currentManualUploadAttachment.url
         ? '<a class="attachment-download" href="' +
-          escapeHtml(currentManualUploadAttachment.url) +
-          '" download="' +
-          escapeHtml(currentManualUploadAttachment.name) +
-          '">Download</a>'
+        escapeHtml(currentManualUploadAttachment.url) +
+        '" download="' +
+        escapeHtml(currentManualUploadAttachment.name) +
+        '">Download</a>'
         : '') +
       '</div>';
   } else {
@@ -8027,14 +8314,14 @@ function openQuickSend(ref) {
   document.getElementById("quick-send-to").value = d.to || "";
   document.getElementById("quick-send-instruction").value = d.instruction || d.sendRemarks || "";
   document.getElementById("quick-send-outlook").value = d.outlookEmailContent || "";
-  
+
   // Set direction radio button
   var direction = d.direction || "outgoing";
   var directionRadios = document.querySelectorAll('input[name="quick-send-direction"]');
-  directionRadios.forEach(function(radio) {
+  directionRadios.forEach(function (radio) {
     radio.checked = (radio.value === direction);
   });
-  
+
   document.getElementById("quick-send-modal").classList.add("open");
   document.body.classList.add("modal-open");
 }
@@ -8056,7 +8343,7 @@ function submitQuickSend() {
     document.getElementById("quick-send-outlook").value || ""
   ).trim();
   var direction = document.querySelector('input[name="quick-send-direction"]:checked')?.value || "outgoing";
-  
+
   if (!to) {
     showError("Please fill in where to send the document.");
     return;
@@ -8212,14 +8499,14 @@ function closeRegisterChoice() {
 
 function chooseRegisterFile() {
   closeRegisterChoice();
-  setTimeout(function() {
+  setTimeout(function () {
     openUploadDocumentModal();
   }, 300);
 }
 
 function chooseRegisterEmail() {
   closeRegisterChoice();
-  setTimeout(function() {
+  setTimeout(function () {
     openRegisterEmailModal();
   }, 300);
 }
@@ -8231,14 +8518,14 @@ function chooseRegisterEmail() {
 function openRegisterEmailModal() {
   var modal = document.getElementById("register-email-modal");
   if (!modal) return;
-  
+
   // Auto-generate reference number
   var refField = document.getElementById("register-email-ref");
   var dateField = document.getElementById("register-email-date");
-  
+
   if (refField) refField.value = nextSystemReference(formatDateISO(new Date()));
   if (dateField) dateField.value = formatDateISO(new Date());
-  
+
   // Clear all fields
   var subjectField = document.getElementById("register-email-subject");
   var fromField = document.getElementById("register-email-from");
@@ -8247,7 +8534,7 @@ function openRegisterEmailModal() {
   var categoryField = document.getElementById("register-email-category");
   var confidentialityField = document.getElementById("register-email-confidentiality");
   var bodyField = document.getElementById("register-email-body");
-  
+
   if (subjectField) subjectField.value = "";
   if (fromField) fromField.value = "";
   if (toField) toField.value = "";
@@ -8255,7 +8542,7 @@ function openRegisterEmailModal() {
   if (categoryField) categoryField.selectedIndex = 0;
   if (confidentialityField) confidentialityField.selectedIndex = 0;
   if (bodyField) bodyField.value = "";
-  
+
   modal.classList.add("open");
   document.body.classList.add("modal-open");
 }
@@ -8282,7 +8569,7 @@ function submitRegisterEmail() {
     showError("Please enter an email subject.");
     return;
   }
-  
+
   if (!emailBody) {
     showError("Please paste or enter the email content.");
     return;
@@ -8347,17 +8634,17 @@ function submitRegisterEmail() {
     tracking: {
       lastActor: currentUser.role,
       lastUpdated: new Date().toISOString(),
-      trail: [{ 
-        user: currentUser.name, 
-        action: "Registered email communication", 
-        timestamp: new Date().toISOString() 
+      trail: [{
+        user: currentUser.name,
+        action: "Registered email communication",
+        timestamp: new Date().toISOString()
       }],
     },
   };
 
   // Add to DOCS array
   DOCS.push(newEmailDoc);
-  
+
   // Save to localStorage
   saveDocuments();
 
@@ -8365,7 +8652,7 @@ function submitRegisterEmail() {
 
   closeRegisterEmail();
   showSuccess("Email communication registered successfully: " + ref);
-  
+
   // Refresh documents page if currently viewing
   if (currentPage === "documents" || currentPage === "logbook") {
     showPage(currentPage);
@@ -8617,31 +8904,31 @@ var selectedWorkflowStatus = null;
 function openStatusUpdateModal(ref) {
   var doc = getDocByRef(ref);
   if (!doc) { showError("Document not found."); return; }
-  
+
   currentStatusUpdateRef = ref;
   selectedWorkflowStatus = null;
-  
+
   // Populate document info
   var infoDiv = document.getElementById("status-update-doc-info");
   if (infoDiv) {
-    infoDiv.innerHTML = 
+    infoDiv.innerHTML =
       '<div style="font-weight:700;color:var(--navy);margin-bottom:4px">' + escapeHtml(doc.ref) + '</div>' +
       '<div style="color:var(--text)">' + escapeHtml(doc.subject || '—') + '</div>' +
       '<div style="margin-top:6px;font-size:12px;color:var(--muted)">Current Status: <strong>' + escapeHtml(doc.status || 'New') + '</strong></div>';
   }
-  
+
   // Reset radio buttons and comment field
   var radios = document.getElementsByName("workflow-status");
   for (var i = 0; i < radios.length; i++) {
     radios[i].checked = false;
     radios[i].parentElement.style.borderColor = '#e0e0e0';
   }
-  
+
   var commentField = document.getElementById("status-comment-field");
   var commentTextarea = document.getElementById("status-comment");
   if (commentField) commentField.style.display = 'none';
   if (commentTextarea) commentTextarea.value = '';
-  
+
   // Open modal
   var modal = document.getElementById("status-update-modal");
   if (modal) {
@@ -8660,7 +8947,7 @@ function closeStatusUpdateModal() {
 
 function selectWorkflowStatus(radio) {
   selectedWorkflowStatus = radio.value;
-  
+
   // Update visual styling for selected radio
   var radios = document.getElementsByName("workflow-status");
   for (var i = 0; i < radios.length; i++) {
@@ -8672,7 +8959,7 @@ function selectWorkflowStatus(radio) {
       radios[i].parentElement.style.background = 'white';
     }
   }
-  
+
   // Show comment field for "Needs Clarification" or "On Hold"
   var commentField = document.getElementById("status-comment-field");
   if (commentField) {
@@ -8689,33 +8976,33 @@ function submitStatusUpdate() {
     showError("No document selected.");
     return;
   }
-  
+
   if (!selectedWorkflowStatus) {
     showError("Please select a status.");
     return;
   }
-  
+
   var doc = getDocByRef(currentStatusUpdateRef);
   if (!doc) {
     showError("Document not found.");
     return;
   }
-  
+
   var comment = (document.getElementById("status-comment").value || "").trim();
   var oldStatus = doc.status || "New";
-  
+
   // Update document status - THIS IS THE CENTRALIZED STATUS
   doc.status = selectedWorkflowStatus;
-  
+
   // Add to tracking trail with timestamp
   if (!doc.tracking) doc.tracking = { trail: [] };
   if (!doc.tracking.trail) doc.tracking.trail = [];
-  
+
   var actionText = "Status changed from " + oldStatus + " to " + selectedWorkflowStatus;
   if (comment) {
     actionText += " — " + comment;
   }
-  
+
   doc.tracking.trail.push({
     user: currentUser.name,
     action: actionText,
@@ -8726,13 +9013,13 @@ function submitStatusUpdate() {
       comment: comment
     }
   });
-  
+
   doc.tracking.lastUpdated = new Date().toISOString();
   doc.tracking.lastActor = currentUser.role;
-  
+
   closeStatusUpdateModal();
   showSuccess("Document status updated to: " + selectedWorkflowStatus);
-  
+
   // Refresh current page to show updated status
   if (currentPage === "logbook") {
     showPage("logbook");
@@ -8743,7 +9030,7 @@ function submitStatusUpdate() {
   } else if (currentPage === "dashboard") {
     showPage("dashboard");
   }
-  
+
   // Update navigation counts
   renderNav();
 }
@@ -9185,11 +9472,11 @@ function renderIncomingTable(tab) {
       var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>' : "";
       var divFull = d.division || "";
       var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
-      
+
       // Use centralized recipient check
       var isRecipient = isCurrentUserRecipient(d);
       var statusDisplay = renderStatusDropdown(d.ref, d.status, isRecipient);
-      
+
       h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + flowPill(d.kind) + "</td><td>" + d.type + conf + "</td><td>" + d.from + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + d.date + "</td><td>" + statusDisplay + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
     });
   }
@@ -9213,11 +9500,11 @@ function renderOutgoingTable(tab) {
       var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>' : "";
       var divFull = d.division || "";
       var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
-      
+
       // Use centralized recipient check
       var isRecipient = isCurrentUserRecipient(d);
       var statusDisplay = renderStatusDropdown(d.ref, d.status, isRecipient);
-      
+
       h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + flowPill(d.kind) + "</td><td>" + d.type + conf + "</td><td>" + d.to + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + d.date + "</td><td>" + statusDisplay + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
     });
   }
@@ -9501,10 +9788,10 @@ function processOCR(imageData) {
     var language = document.getElementById("ocr-language").value;
     var autoEnhance = document.getElementById("ocr-auto-enhance").checked;
 
-var sampleDate = formatManilaDate(new Date());
-  var sampleRef = formatDateISO(new Date());
-  // Sample OCR result
-  var sampleText = `DEPARTMENT OF EDUCATION
+    var sampleDate = formatManilaDate(new Date());
+    var sampleRef = formatDateISO(new Date());
+    // Sample OCR result
+    var sampleText = `DEPARTMENT OF EDUCATION
 Region VII - Central Visayas
 Division Office - Prototype
 
