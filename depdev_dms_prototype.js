@@ -13,8 +13,8 @@ const announcements = [
   },
   {
     id: 2,
-    title: "New Memorandum Released",
-    content: "Memorandum No. 2026-015 has been officially released.",
+    title: "New Memorandum Issued",
+    content: "Memorandum No. 2026-015 has been officially issued.",
     postedBy: "Regional Director",
     priority: "Normal",
     pinned: false,
@@ -136,17 +136,17 @@ function showToast(message, type = "info", duration = 3000) {
   const toast = document.createElement("div");
 
   const icons = {
-    success: "✓",
-    error: "!",
-    warning: "⚠",
-    info: "ℹ",
+    success: svgIcon("check", 16),
+    error: svgIcon("alertcircle", 16),
+    warning: svgIcon("alert", 16),
+    info: svgIcon("info", 16),
   };
 
   toast.className = `toast toast-${type}`;
   toast.innerHTML = `
     <span class="toast-icon">${icons[type] || "•"}</span>
     <span>${message}</span>
-    <button class="toast-close" onclick="this.parentElement.classList.add('removing'); setTimeout(() => this.parentElement.remove(), 300)">✕</button>
+    <button class="toast-close" onclick="this.parentElement.classList.add('removing'); setTimeout(() => this.parentElement.remove(), 300)">${svgIcon("x", 14)}</button>
   `;
 
   container.appendChild(toast);
@@ -194,7 +194,7 @@ function showConfirmDialog(opts) {
       ? variant
       : "neutral";
 
-  var glyphs = { danger: "⚠", warning: "📦", neutral: "👤" };
+  var glyphs = { danger: svgIcon("alert", 26), warning: svgIcon("box", 26), neutral: svgIcon("user", 26) };
   var glyph = glyphs[safeVariant] || glyphs.neutral;
 
   return new Promise(function (resolve) {
@@ -528,6 +528,567 @@ function getDocReadStateForUser(user) {
   return DOC_READ_STATE[key] || {};
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// DOCUMENT CONVERSATIONS DATA MODEL
+// ═══════════════════════════════════════════════════════════════════════════
+
+var DOC_CONVERSATIONS_STORAGE_KEY = "depdev_dms_document_conversations";
+var DOC_CONVERSATIONS = [];
+
+function loadDocumentConversations() {
+  DOC_CONVERSATIONS = [];
+  try {
+    if (typeof localStorage !== "undefined") {
+      var raw = localStorage.getItem(DOC_CONVERSATIONS_STORAGE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed)) {
+          DOC_CONVERSATIONS = parsed;
+        }
+      }
+    }
+  } catch (e) {
+    DOC_CONVERSATIONS = [];
+  }
+}
+
+function saveDocumentConversations() {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(DOC_CONVERSATIONS_STORAGE_KEY, JSON.stringify(DOC_CONVERSATIONS));
+    }
+  } catch (e) {
+    // ignore storage failures
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DOCUMENT RATING SYSTEM — 5-star document-quality rating, strictly role-scoped
+//
+// Rater            -> can rate documents authored by
+//   RD / ARD       -> Division Chief documents (tracked as separate slots)
+//   Division Chief -> Staff documents filed in the Chief's OWN division only
+// No other role may submit a rating. Documents authored by RD/ARD/Admin/OIC/
+// Custodian/Supervisor are never rateable, so no control appears for anyone.
+//
+// Persistence mirrors the document-conversation pattern: a dedicated
+// localStorage key holding a per-document map of rater-role -> rating object.
+// Shape:
+//   DOC_RATINGS[ref][slot] = {
+//     stars:1-5, ratedBy, ratedByName, ratedByRole, ratedAt, comment?,
+//     division, authorName, authorRole
+//   }
+// where slot is the rater's canonical role ("rd" | "ard" | "dc").
+// ═══════════════════════════════════════════════════════════════════════════
+
+var DOC_RATINGS_STORAGE_KEY = "depdev_dms_ratings";
+var DOC_RATINGS = {};
+
+function loadDocumentRatings() {
+  DOC_RATINGS = {};
+  try {
+    if (typeof localStorage !== "undefined") {
+      var raw = localStorage.getItem(DOC_RATINGS_STORAGE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          DOC_RATINGS = parsed;
+        }
+      }
+    }
+  } catch (e) {
+    DOC_RATINGS = {};
+  }
+}
+
+function saveDocumentRatings() {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(DOC_RATINGS_STORAGE_KEY, JSON.stringify(DOC_RATINGS));
+    }
+  } catch (e) {
+    // ignore storage failures
+  }
+}
+
+// USERS stores lowercase roles ("dc"), USER_ACCOUNTS stores labels ("Division
+// Chief"). Normalize every role to a single canonical token before comparing.
+var RATING_ROLE_ALIASES = {
+  admin: "admin", administrator: "admin",
+  rd: "rd", "regional director": "rd",
+  ard: "ard", "asst regional director": "ard", "assistant regional director": "ard",
+  oic: "oic", "officer in charge": "oic",
+  dc: "dc", "division chief": "dc",
+  custodian: "custodian", "division custodian": "custodian",
+  supervisor: "supervisor",
+  staff: "staff"
+};
+
+function canonicalRole(role) {
+  if (!role) return "";
+  var key = String(role)
+    .toLowerCase()
+    .replace(/[^a-z ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return RATING_ROLE_ALIASES[key] || key;
+}
+
+var RATING_ROLE_LABELS = {
+  admin: "Administrator", rd: "Regional Director", ard: "Asst. Regional Director",
+  oic: "OIC", dc: "Division Chief", custodian: "Division Custodian",
+  supervisor: "Supervisor", staff: "Staff"
+};
+
+function ratingRoleLabel(role) {
+  var c = canonicalRole(role);
+  return RATING_ROLE_LABELS[c] || (role ? String(role) : "");
+}
+
+// Resolve the person responsible for a document from its uploadedBy field
+// (NOT from doc.from / doc.division, which describe routing, not authorship).
+function getDocumentAuthor(doc) {
+  if (!doc) return null;
+  var uploadedBy = doc.uploadedBy || (doc.metadata && doc.metadata.uploadedBy) || "";
+  var resolved = uploadedBy ? findUserForDocumentContact(uploadedBy) : null;
+  if (resolved) {
+    return {
+      name: resolved.name || uploadedBy,
+      role: canonicalRole(resolved.role),
+      roleLabel: resolved.roleLabel || resolved.role || "",
+      division: resolved.division || "",
+      id: resolved.id || "",
+      email: resolved.email || ""
+    };
+  }
+  // Fallback: some documents carry an explicit uploadedByRole hint.
+  var roleHint = doc.uploadedByRole || (doc.metadata && doc.metadata.uploadedByRole) || "";
+  if (roleHint) {
+    return {
+      name: uploadedBy, role: canonicalRole(roleHint), roleLabel: roleHint,
+      division: doc.division || "", id: "", email: ""
+    };
+  }
+  return null;
+}
+
+function isSamePersonAsAuthor(user, person) {
+  if (!user || !person) return false;
+  if (user.id && person.id && user.id === person.id) return true;
+  if (user.email && person.email &&
+      String(user.email).toLowerCase() === String(person.email).toLowerCase()) return true;
+  if (user.name && person.name) {
+    var a = normalizeDocumentContact(user.name);
+    var b = normalizeDocumentContact(person.name);
+    if (a && a === b) return true;
+  }
+  return false;
+}
+
+// Only RD, ARD and DC occupy a rating slot; the slot key is their canonical role.
+function ratingSlotForUser(user) {
+  var r = canonicalRole(user && user.role);
+  return (r === "rd" || r === "ard" || r === "dc") ? r : null;
+}
+
+// FUNCTION-LEVEL SOURCE OF TRUTH for "may this user rate this document?".
+// The UI hides/disables the control using this same function, and
+// submitDocumentRating() re-checks it, so hiding alone is never relied upon.
+function canRateDocument(doc, user) {
+  if (!doc || !user) return false;
+  var author = getDocumentAuthor(doc);
+  if (!author) return false;
+  var ur = canonicalRole(user.role);
+
+  // RD and ARD each rate Division Chief documents (separate, independent slots).
+  if (author.role === "dc") {
+    return ur === "rd" || ur === "ard";
+  }
+  // A Division Chief rates Staff documents filed in the Chief's OWN division.
+  // Division is matched on the document's division field, consistent with the
+  // existing logbook/view access gate. A Chief from Division A is therefore
+  // blocked from a Staff document in Division B.
+  if (author.role === "staff") {
+    if (ur !== "dc") return false;
+    var docDiv = doc.division || "";
+    var userDiv = user.division || "";
+    return !!userDiv && !!docDiv && userDiv === docDiv;
+  }
+  // Every other author role (rd/ard/admin/oic/custodian/supervisor) is not rateable.
+  return false;
+}
+
+// Who may VIEW an existing rating (default scope — flagged in the report):
+// the rater, the document's author, the author's direct supervisor/chief, and
+// Admin/RD/ARD in a reporting capacity. OIC/Custodian see ratings only on
+// documents they themselves authored.
+function canViewRating(doc, user) {
+  if (!doc || !user) return false;
+  var ur = canonicalRole(user.role);
+  if (ur === "admin" || ur === "rd" || ur === "ard") return true; // reporting capacity
+  var author = getDocumentAuthor(doc);
+  if (!author) return false;
+  if (isSamePersonAsAuthor(user, author)) return true;            // the author
+  if (canRateDocument(doc, user)) return true;                    // eligible rater
+  if (author.role === "staff") {                                  // direct chief/supervisor
+    var docDiv = doc.division || "";
+    var userDiv = user.division || "";
+    if ((ur === "dc" || ur === "supervisor") && userDiv && userDiv === docDiv) return true;
+  }
+  return false;
+}
+
+function getDocumentRatings(ref) {
+  return (ref && DOC_RATINGS[ref]) ? DOC_RATINGS[ref] : {};
+}
+
+// The rating this specific user is allowed to submit/update (their own slot).
+function getOwnRatingForDoc(doc, user) {
+  var slot = ratingSlotForUser(user);
+  if (!slot) return null;
+  var map = getDocumentRatings(doc && doc.ref);
+  return map[slot] || null;
+}
+
+// All ratings on a document that the given user is permitted to see.
+function getVisibleRatingsForDoc(doc, user) {
+  if (!doc || !canViewRating(doc, user)) return [];
+  var map = getDocumentRatings(doc.ref);
+  var out = [];
+  Object.keys(map).forEach(function (slot) {
+    if (map[slot] && map[slot].stars) out.push(map[slot]);
+  });
+  return out;
+}
+
+function getRatingSummaryForDoc(doc, user) {
+  var list = getVisibleRatingsForDoc(doc, user);
+  if (!list.length) return null;
+  var sum = 0;
+  list.forEach(function (r) { sum += r.stars; });
+  return { count: list.length, average: sum / list.length, ratings: list };
+}
+
+// ── Star rendering (gold accent tokens, neutral empties — no bright colors) ──
+var RATING_STAR_PATH = '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>';
+
+function starIcon(size, filled) {
+  var s = size || 16;
+  var fill = filled ? "var(--gold2)" : "none";
+  var stroke = filled ? "var(--gold)" : "var(--border)";
+  return '<svg class="icn" width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="' + fill +
+    '" stroke="' + stroke + '" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    RATING_STAR_PATH + '</svg>';
+}
+
+function renderStarsDisplay(value, size) {
+  var v = Math.max(0, Math.min(5, Math.round(value || 0)));
+  var s = size || 14;
+  var out = '<span class="star-display">';
+  for (var i = 1; i <= 5; i++) out += starIcon(s, i <= v);
+  out += '</span>';
+  return out;
+}
+
+// Compact read-only star cell for list/table views.
+function renderRatingCell(doc) {
+  var summary = getRatingSummaryForDoc(doc, currentUser);
+  if (!summary) return '<span style="color:var(--muted);font-size:11px">—</span>';
+  var tip = summary.ratings.map(function (r) {
+    return ratingRoleLabel(r.ratedByRole) + ": " + r.stars + "/5";
+  }).join(" · ");
+  return '<span class="rating-cell" title="' + escapeHtml(tip) + '">' +
+    renderStarsDisplay(summary.average, 12) + '</span>';
+}
+
+// ── Submit (re-checks permission at the function level; UI hiding is not trusted) ──
+function submitDocumentRating(ref, stars, comment) {
+  var doc = getDocByRef(ref);
+  if (!doc) return { ok: false, error: "Document not found." };
+  if (!canRateDocument(doc, currentUser)) {
+    return { ok: false, error: "You are not authorized to rate this document." };
+  }
+  var slot = ratingSlotForUser(currentUser);
+  if (!slot) return { ok: false, error: "Your role cannot submit document ratings." };
+  var n = parseInt(stars, 10);
+  if (!(n >= 1 && n <= 5)) return { ok: false, error: "Please choose a rating from 1 to 5 stars." };
+
+  var author = getDocumentAuthor(doc);
+  if (!DOC_RATINGS[ref]) DOC_RATINGS[ref] = {};
+  DOC_RATINGS[ref][slot] = {
+    stars: n,
+    ratedBy: currentUser.id || "",
+    ratedByName: currentUser.name || "",
+    ratedByRole: canonicalRole(currentUser.role),
+    ratedAt: new Date().toISOString(),
+    comment: (comment == null ? "" : String(comment)).trim(),
+    division: doc.division || "",        // division context (critical for DC -> Staff)
+    authorName: author ? author.name : (doc.uploadedBy || ""),
+    authorRole: author ? author.role : ""
+  };
+  saveDocumentRatings();
+  return { ok: true, rating: DOC_RATINGS[ref][slot] };
+}
+
+// ── Interactive control state + handlers (viewDoc) ──
+var currentStarSelection = 0;
+
+function sanitizeRatingRef(ref) {
+  return String(ref || "").replace(/[^a-zA-Z0-9]/g, "");
+}
+
+function formatRatingDate(iso) {
+  try {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" });
+  } catch (e) { return ""; }
+}
+
+function paintStars(ref, filledTo, size) {
+  var sref = sanitizeRatingRef(ref);
+  for (var i = 1; i <= 5; i++) {
+    var el = document.getElementById("star-btn-" + sref + "-" + i);
+    if (el) el.innerHTML = starIcon(size || 24, i <= filledTo);
+  }
+}
+
+function setStarSelection(ref, n) {
+  currentStarSelection = n;
+  paintStars(ref, n, 24);
+  var v = document.getElementById("doc-rating-value-" + sanitizeRatingRef(ref));
+  if (v) v.textContent = n + " / 5";
+}
+
+function previewStars(ref, n) {
+  paintStars(ref, n, 24);
+  var v = document.getElementById("doc-rating-value-" + sanitizeRatingRef(ref));
+  if (v) v.textContent = n + " / 5";
+}
+
+function resetStarPreview(ref) {
+  var sel = currentStarSelection || 0;
+  paintStars(ref, sel, 24);
+  var v = document.getElementById("doc-rating-value-" + sanitizeRatingRef(ref));
+  if (v) v.textContent = sel ? (sel + " / 5") : "Select a rating";
+}
+
+function submitRatingFromUI(ref) {
+  if (!currentStarSelection || currentStarSelection < 1) {
+    showError("Please select a star rating before submitting.");
+    return;
+  }
+  var commentEl = document.getElementById("rating-comment-" + sanitizeRatingRef(ref));
+  var comment = commentEl ? commentEl.value : "";
+  var res = submitDocumentRating(ref, currentStarSelection, comment);
+  if (!res.ok) { showError(res.error || "Unable to submit rating."); return; }
+  showSuccess("Rating saved: " + currentStarSelection + "/5");
+  viewDoc(ref);
+}
+
+// Builds the rating block for the document viewer. Returns "" when the current
+// user is neither an eligible rater nor permitted to see an existing rating.
+function renderDocRatingControl(doc) {
+  if (!doc) return "";
+  var sref = sanitizeRatingRef(doc.ref);
+  var escRef = escapeHtml(doc.ref);
+
+  // Eligible rater -> interactive control (pre-filled with their own rating,
+  // which they may update — re-rating is allowed by default).
+  if (canRateDocument(doc, currentUser)) {
+    var mine = getOwnRatingForDoc(doc, currentUser);
+    var preset = mine ? mine.stars : 0;
+    currentStarSelection = preset;
+    var h = '<div class="doc-rating-box">';
+    h += '<div class="doc-rating-head">' + starIcon(15, true) + ' <span>Rate Document Quality</span></div>';
+    h += '<div class="doc-rating-stars" id="doc-rating-stars-' + sref + '">';
+    for (var i = 1; i <= 5; i++) {
+      h += '<span class="star-btn" id="star-btn-' + sref + '-' + i + '" role="button" tabindex="0" ' +
+        'title="' + i + ' star' + (i > 1 ? 's' : '') + '" ' +
+        'onclick="setStarSelection(\'' + escRef + '\',' + i + ')" ' +
+        'onmouseover="previewStars(\'' + escRef + '\',' + i + ')" ' +
+        'onmouseout="resetStarPreview(\'' + escRef + '\')" ' +
+        'onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();setStarSelection(\'' + escRef + '\',' + i + ');}">' +
+        starIcon(24, i <= preset) + '</span>';
+    }
+    h += '</div>';
+    h += '<div class="doc-rating-value" id="doc-rating-value-' + sref + '">' + (preset ? (preset + " / 5") : "Select a rating") + '</div>';
+    h += '<textarea id="rating-comment-' + sref + '" class="doc-rating-comment" rows="2" maxlength="280" ' +
+      'placeholder="Optional short feedback for the document author…">' + escapeHtml(mine && mine.comment ? mine.comment : "") + '</textarea>';
+    h += '<div class="doc-rating-actions">';
+    h += '<button class="btn-sm primary" onclick="submitRatingFromUI(\'' + escRef + '\')">' + (mine ? "Update Rating" : "Submit Rating") + '</button>';
+    if (mine) h += '<span class="doc-rating-note">You rated this ' + escapeHtml(formatRatingDate(mine.ratedAt)) + '</span>';
+    h += '</div></div>';
+    return h;
+  }
+
+  // Everyone else permitted to view -> read-only display of existing rating(s).
+  var visible = getVisibleRatingsForDoc(doc, currentUser);
+  if (!visible.length) return "";
+  var r = '<div class="doc-rating-box readonly">';
+  r += '<div class="doc-rating-head">' + starIcon(15, true) + ' <span>Document Quality Rating</span></div>';
+  visible.forEach(function (rt) {
+    r += '<div class="doc-rating-row">' + renderStarsDisplay(rt.stars, 16);
+    r += '<span class="doc-rating-by">' + escapeHtml(ratingRoleLabel(rt.ratedByRole)) +
+      (rt.ratedByName ? (" · " + escapeHtml(rt.ratedByName)) : "") + '</span></div>';
+    if (rt.comment) r += '<div class="doc-rating-comment-display">“' + escapeHtml(rt.comment) + '”</div>';
+  });
+  r += '</div>';
+  return r;
+}
+
+function getDocumentConversation(docRef) {
+  if (!docRef) return null;
+  return DOC_CONVERSATIONS.find(function(c) {
+    return c.documentId === docRef;
+  });
+}
+
+function getOrCreateDocumentConversation(docRef) {
+  var conversation = getDocumentConversation(docRef);
+  if (conversation) return conversation;
+  
+  // Create new conversation for this document
+  conversation = {
+    documentId: docRef,
+    messages: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  DOC_CONVERSATIONS.push(conversation);
+  saveDocumentConversations();
+  return conversation;
+}
+
+function addDocumentMessage(docRef, senderId, senderName, message) {
+  var conversation = getOrCreateDocumentConversation(docRef);
+  var messageObj = {
+    id: "msg-" + Date.now() + "-" + Math.random().toString(36).substr(2, 9),
+    documentId: docRef,
+    senderId: senderId,
+    senderName: senderName,
+    message: message,
+    createdAt: new Date().toISOString()
+  };
+  conversation.messages.push(messageObj);
+  conversation.updatedAt = new Date().toISOString();
+  saveDocumentConversations();
+  return messageObj;
+}
+
+function getDocumentMessages(docRef) {
+  var conversation = getDocumentConversation(docRef);
+  if (!conversation) return [];
+  return conversation.messages || [];
+}
+
+function getUnreadMessageCount(docRef, userId) {
+  var messages = getDocumentMessages(docRef);
+  var unread = 0;
+  messages.forEach(function(msg) {
+    if (msg.senderId !== userId && !msg.read) {
+      unread++;
+    }
+  });
+  return unread;
+}
+
+function markDocumentMessagesAsRead(docRef, userId) {
+  var conversation = getDocumentConversation(docRef);
+  if (!conversation) return;
+  var changed = false;
+  conversation.messages.forEach(function(msg) {
+    if (msg.senderId !== userId && !msg.read) {
+      msg.read = true;
+      changed = true;
+    }
+  });
+  if (changed) {
+    saveDocumentConversations();
+  }
+}
+
+function formatMessageDate(isoString) {
+  if (!isoString) return '';
+  var date = new Date(isoString);
+  var now = new Date();
+  var isToday = date.toDateString() === now.toDateString();
+  
+  var monthNames = ["January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"];
+  
+  var hours = date.getHours();
+  var minutes = date.getMinutes();
+  var ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  hours = hours ? hours : 12;
+  var timeStr = hours + ':' + (minutes < 10 ? '0' : '') + minutes + ' ' + ampm;
+  
+  if (isToday) {
+    return 'Today • ' + timeStr;
+  }
+  
+  return monthNames[date.getMonth()] + ' ' + date.getDate() + ', ' + date.getFullYear() + ' • ' + timeStr;
+}
+
+function sendDocumentMessage(docRef) {
+  var input = document.getElementById('doc-message-input');
+  if (!input) return;
+  
+  var message = input.value.trim();
+  if (!message) {
+    showError('Please enter a message');
+    return;
+  }
+  
+  var doc = getDocByRef(docRef);
+  if (!doc) {
+    showError('Document not found');
+    return;
+  }
+  
+  // Add message to conversation
+  var userKey = getCurrentUserNotificationKey();
+  var messageObj = addDocumentMessage(docRef, userKey, currentUser.name, message);
+  
+  // Create notification for the other participant(s)
+  var recipientKey = null;
+  if (doc.recipientId) {
+    recipientKey = doc.recipientId;
+  } else if (doc.to) {
+    var recipient = resolveRecipient(doc.to);
+    if (recipient) {
+      recipientKey = getNotificationKeyForUser(recipient);
+    }
+  }
+  
+  if (recipientKey && recipientKey !== userKey) {
+    addNotification({
+      recipientKey: recipientKey,
+      type: "document_message",
+      documentId: docRef,
+      documentRef: docRef,
+      documentTitle: doc.subject,
+      messageId: messageObj.id,
+      senderId: userKey,
+      senderName: currentUser.name,
+      message: currentUser.name + " sent you a message regarding \"" + doc.subject + "\""
+    });
+  }
+  
+  // Clear input and refresh view
+  input.value = '';
+  viewDoc(docRef);
+  showSuccess('Message sent');
+}
+
+function handleDocMessageKeydown(event, docRef) {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    sendDocumentMessage(docRef);
+  }
+}
+
 function isDocumentReadByUser(ref, user) {
   if (!ref || !user) return false;
   var state = getDocReadStateForUser(user);
@@ -689,25 +1250,35 @@ function getUnreadNotificationCount() {
 }
 
 function renderNotificationItemHtml(notification) {
+  console.log('Rendering notification:', notification.id, 'docRef:', notification.documentRef || notification.documentId);
+  
   var icon =
     notification.type === "document_received"
-      ? "📄"
+      ? svgIcon("filetext", 16)
+      : notification.type === "document_message"
+      ? svgIcon("message", 16)
       : notification.type === "new_reply"
-      ? "💬"
-      : "🔔";
+      ? svgIcon("message", 16)
+      : svgIcon("bell", 16);
   var title =
     notification.type === "document_received"
       ? "New Document"
+      : notification.type === "document_message"
+      ? "New Message"
       : notification.type === "new_reply"
       ? "New Reply"
       : "Notification";
+  var directionLabel = notification.documentDirection === "incoming" ? "Incoming" : 
+                      notification.documentDirection === "outgoing" ? "Outgoing" : "";
   var detail = "";
   if (notification.type === "document_received") {
     detail =
       escapeHtml(notification.senderName || "Sender") +
-      " sent you a document: \"" +
+      " sent you a " + directionLabel.toLowerCase() + " document: \"" +
       escapeHtml(notification.documentTitle || notification.documentId || "") +
       "\"";
+  } else if (notification.type === "document_message") {
+    detail = escapeHtml(notification.message || notification.senderName + " sent you a message");
   } else if (notification.type === "new_reply") {
     detail =
       escapeHtml(notification.senderName || "Sender") +
@@ -723,22 +1294,33 @@ function renderNotificationItemHtml(notification) {
   var timeLabel = formatRelativeTime(notification.dateTime || new Date().toISOString());
   var itemClass = notification.read ? "" : "unread";
   var dotClass = notification.read ? "read" : "";
-  var docArg = JSON.stringify(notification.documentRef || "");
-  var idArg = JSON.stringify(notification.id || "");
+  var typeClass = notification.type === "document_message" ? " notif-type-message" : "";
+  
+  // Use data attributes instead of inline onclick for better reliability
+  var docRef = escapeHtml(notification.documentRef || notification.documentId || "");
+  var notifId = escapeHtml(notification.id || "");
+  
+  console.log('  → Click handler will use docRef:', docRef, 'notifId:', notifId);
+  
+  var directionBadge = directionLabel 
+    ? '<span class="direction-badge direction-' + notification.documentDirection + '" style="margin-left:8px;">' + directionLabel + '</span>'
+    : '';
+  
   return (
-    '<div class="notif-item ' +
-    itemClass +
-    '"><div class="notif-dot2 ' +
+    '<div class="notif-item ' + itemClass + typeClass + '" data-doc-ref="' + docRef + '" data-notif-id="' + notifId + '" data-notif-type="' + notification.type + '" style="cursor:pointer" onclick="openNotificationDocument(\'' +
+    docRef.replace(/'/g, "\\'") +
+    "', '" +
+    notifId.replace(/'/g, "\\'") +
+    '\')">' +
+    '<div class="notif-dot2 ' +
     dotClass +
-    '"></div><div class="notif-content" style="flex:1;cursor:pointer" onclick="openNotificationDocument(' +
-    docArg +
-    ', ' +
-    idArg +
-    ')"><div class="notif-text"><strong>' +
+    '"></div>' +
+    '<div class="notif-content" style="flex:1">' +
+    '<div class="notif-text"><strong>' +
     icon +
     " " +
     escapeHtml(title) +
-    '</strong><div style="margin-top:0.35rem;line-height:1.4">' +
+    '</strong>' + directionBadge + '<div style="margin-top:0.35rem;line-height:1.4">' +
     detail +
     "</div>" +
     preview +
@@ -782,6 +1364,14 @@ function renderNotificationPanel() {
 }
 
 function openNotificationDocument(docRef, notificationId) {
+  console.log('🔔 Notification clicked:', docRef, 'notificationId:', notificationId);
+  
+  if (!docRef) {
+    console.error('❌ No document reference provided');
+    showError('Could not open document: missing reference');
+    return;
+  }
+  
   if (notificationId) {
     var notif = NOTIFICATIONS.find(function (n) {
       return n.id === notificationId;
@@ -789,11 +1379,61 @@ function openNotificationDocument(docRef, notificationId) {
     if (notif && !notif.read) {
       notif.read = true;
       saveNotifications();
+      console.log('✓ Notification marked as read');
     }
   }
+  
   renderNotificationPanel();
+  updateNotificationBadge(getUnreadNotificationCount());
   closeNotif();
-  viewDoc(docRef);
+  
+  // Find the document to determine direction
+  var doc = getDocByRef(docRef);
+  if (doc) {
+    var direction = doc.direction || doc.kind || "outgoing";
+    console.log('→ Document direction:', direction);
+    
+    // Navigate to the appropriate page based on direction
+    if (direction === "incoming") {
+      console.log('→ Navigating to incoming documents...');
+      showPage('incoming');
+    } else {
+      console.log('→ Navigating to outgoing documents...');
+      showPage('outgoing');
+    }
+  } else {
+    // Default to outgoing if doc not found
+    showPage('outgoing');
+  }
+  
+  // Then open the specific document
+  setTimeout(function() {
+    console.log('→ Opening document:', docRef);
+    viewDoc(docRef);
+    
+    // If this is a document message notification, scroll to conversation
+    if (notificationId) {
+      var notif = NOTIFICATIONS.find(function (n) {
+        return n.id === notificationId;
+      });
+      if (notif && notif.type === "document_message") {
+        setTimeout(function() {
+          var convSection = document.getElementById('doc-conversation-section');
+          if (convSection) {
+            convSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            // Highlight the conversation header briefly
+            var header = convSection.querySelector('.doc-conversation-header');
+            if (header) {
+              header.style.background = 'rgba(30, 79, 153, 0.1)';
+              setTimeout(function() {
+                header.style.background = 'transparent';
+              }, 1000);
+            }
+          }
+        }, 300);
+      }
+    }
+  }, 300);
 }
 
 function markAllNotificationsRead() {
@@ -811,6 +1451,21 @@ function markAllNotificationsRead() {
 
 function addNotification(notification) {
   if (!notification || !notification.recipientKey) return;
+  
+  // Check for duplicate notification (same recipient, type, and document within last 5 minutes)
+  var fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  var isDuplicate = NOTIFICATIONS.some(function(n) {
+    return n.recipientKey === notification.recipientKey &&
+           n.type === notification.type &&
+           n.documentId === notification.documentId &&
+           n.dateTime > fiveMinutesAgo;
+  });
+  
+  if (isDuplicate) {
+    console.log('Duplicate notification prevented for', notification.documentId);
+    return;
+  }
+  
   notification.id = notification.id || "notif-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
   notification.read = notification.read || false;
   notification.dateTime = notification.dateTime || new Date().toISOString();
@@ -819,6 +1474,7 @@ function addNotification(notification) {
   }
   NOTIFICATIONS.unshift(notification);
   saveNotifications();
+  updateNotificationBadge(getUnreadNotificationCount());
   renderNotificationPanel();
 }
 
@@ -924,7 +1580,7 @@ var DOCS_DEFAULT = [
     from: "Chief Reyes",
     to: "All Staff",
     subject: "Division Performance Target 2026",
-    status: "For ARD Clearance",
+    status: "In Progress",
     date: "2026-05-14",
     conf: false,
     confidentialityLevel: "Internal",
@@ -945,7 +1601,7 @@ var DOCS_DEFAULT = [
     from: "Staff Ana",
     to: "Chief Reyes",
     subject: "Weekly Accomplishment Report",
-    status: "For ARD Clearance",
+    status: "In Progress",
     date: "2026-05-14",
     conf: false,
     confidentialityLevel: "Internal",
@@ -969,7 +1625,7 @@ var DOCS_DEFAULT = [
     from: "Supervisor Jose",
     to: "Chief Reyes",
     subject: "Leave Application Endorsement",
-    status: "Approved",
+    status: "Done",
     date: "2026-05-14",
     conf: false,
     confidentialityLevel: "Internal",
@@ -990,13 +1646,13 @@ var DOCS_DEFAULT = [
     from: "Sir Harry",
     to: "Regional Staff",
     subject: "DMS System Maintenance Advisory",
-    status: "Released",
+    status: "Acknowledged",
     date: "2026-05-14",
     conf: false,
     confidentialityLevel: "Public",
     priority: "Normal",
     source: "Office of the Regional Director",
-    description: "Advisory on scheduled maintenance of the Document Management System.",
+    description: "Advisory on scheduled maintenance of the Document Record and Management System.",
     uploadedBy: "Sir Harry",
     kind: "outgoing",
     division: "Office of the Regional Director",
@@ -1011,7 +1667,7 @@ var DOCS_DEFAULT = [
     from: "External Partner",
     to: "Regional Director",
     subject: "Invitation: Regional Planning Summit",
-    status: "For RD Approval",
+    status: "In Progress",
     date: "2026-05-14",
     conf: false,
     confidentialityLevel: "Internal",
@@ -1031,14 +1687,14 @@ var DOCS_DEFAULT = [
     category: "Planning",
     from: "Division Chief",
     to: "ARD",
-    subject: "Project Proposal Clearance Request",
-    status: "For ARD Clearance",
+    subject: "Project Proposal Review Request",
+    status: "In Progress",
     date: "2026-05-14",
     conf: false,
     confidentialityLevel: "Internal",
     priority: "High",
     source: "Policy Formulation and Planning Division",
-    description: "Request for ARD clearance on project proposal before submission to NEDA.",
+    description: "Request for review of project proposal before submission to NEDA.",
     uploadedBy: "Chief Reyes",
     kind: "incoming",
     division: "Office of the Regional Director",
@@ -1053,7 +1709,7 @@ var DOCS_DEFAULT = [
     from: "HR Division",
     to: "RD",
     subject: "Personnel Action Form — Promotion",
-    status: "Approved",
+    status: "Done",
     date: "2026-04-26",
     conf: false,
     confidentialityLevel: "Restricted",
@@ -1073,7 +1729,7 @@ var DOCS_DEFAULT = [
       trail: [
         { user: "HR Division", action: "Created", timestamp: "2026-04-26T09:00:00" },
         { user: "RD", action: "Received", timestamp: "2026-04-26T10:15:00" },
-        { user: "RD", action: "Approved", timestamp: "2026-04-26T15:30:00" },
+        { user: "RD", action: "Done", timestamp: "2026-04-26T15:30:00" },
       ],
     },
   },
@@ -1084,7 +1740,7 @@ var DOCS_DEFAULT = [
     from: "MED",
     to: "RD",
     subject: "Monthly Monitoring Report March 2026",
-    status: "Released",
+    status: "Acknowledged",
     date: "2026-04-25",
     conf: false,
     confidentialityLevel: "Internal",
@@ -1104,7 +1760,7 @@ var DOCS_DEFAULT = [
       trail: [
         { user: "MED", action: "Created", timestamp: "2026-04-25T14:00:00" },
         { user: "RD", action: "Received", timestamp: "2026-04-25T14:30:00" },
-        { user: "RD", action: "Released", timestamp: "2026-04-25T16:45:00" },
+        { user: "RD", action: "Sent", timestamp: "2026-04-25T16:45:00" },
       ],
     },
   },
@@ -1115,7 +1771,7 @@ var DOCS_DEFAULT = [
     from: "ORD",
     to: "External",
     subject: "Reply to NEDA Memorandum No. 2026-021",
-    status: "Released",
+    status: "Acknowledged",
     date: "2026-04-24",
     conf: false,
     confidentialityLevel: "Internal",
@@ -1150,7 +1806,7 @@ var DOCS_DEFAULT = [
     from: "RD Office",
     to: "ARD",
     subject: "[Confidential — Reference Only]",
-    status: "For ARD Clearance",
+    status: "In Progress",
     date: "2026-04-20",
     conf: true,
     confidentialityLevel: "Confidential",
@@ -1170,7 +1826,7 @@ var DOCS_DEFAULT = [
     from: "Budget Division",
     to: "RD",
     subject: "Supplemental Budget Proposal 2026",
-    status: "Approved",
+    status: "Done",
     date: "2026-03-30",
     conf: false,
     confidentialityLevel: "Internal",
@@ -1193,7 +1849,7 @@ var DOCS_DEFAULT = [
     from: "Supplier XYZ",
     to: "FAD",
     subject: "Invoice for Office Supplies",
-    status: "Pending",
+    status: "Sent",
     date: "2026-03-28",
     conf: false,
     confidentialityLevel: "Internal",
@@ -1213,7 +1869,7 @@ var DOCS_DEFAULT = [
     from: "Previous Administration",
     to: "RD",
     subject: "Old Policy Guidelines",
-    status: "Approved",
+    status: "Done",
     date: "2021-04-15",
     conf: false,
     kind: "incoming",
@@ -1229,7 +1885,7 @@ var DOCS_DEFAULT = [
     from: "External Agency",
     to: "ARD",
     subject: "Correspondence from 2021",
-    status: "Released",
+    status: "Acknowledged",
     date: "2021-03-20",
     conf: false,
     kind: "incoming",
@@ -1245,7 +1901,7 @@ var DOCS_DEFAULT = [
     from: "DRD",
     to: "RD",
     subject: "Research Report",
-    status: "Approved",
+    status: "Done",
     date: "2026-05-13",
     conf: false,
     kind: "outgoing",
@@ -1261,7 +1917,7 @@ var DOCS_DEFAULT = [
     from: "Finance Division",
     to: "RD",
     subject: "Financial Statement",
-    status: "Released",
+    status: "Acknowledged",
     date: "2026-05-01",
     conf: false,
     kind: "incoming",
@@ -1278,7 +1934,7 @@ var DOCS_DEFAULT = [
     from: "PFP Division",
     to: "RD",
     subject: "Policy Review Guidelines",
-    status: "For RD Approval",
+    status: "In Progress",
     date: "2026-03-25",
     conf: false,
     confidentialityLevel: "Internal",
@@ -1298,7 +1954,7 @@ var DOCS_DEFAULT = [
     from: "DRD Division",
     to: "ARD",
     subject: "Research Findings Summary",
-    status: "Approved",
+    status: "Done",
     date: "2026-03-20",
     conf: false,
     confidentialityLevel: "Internal",
@@ -1318,7 +1974,7 @@ var DOCS_DEFAULT = [
     from: "PDIP Division",
     to: "External Agency",
     subject: "Project Proposal Submission",
-    status: "Released",
+    status: "Acknowledged",
     date: "2026-03-15",
     conf: false,
     confidentialityLevel: "Internal",
@@ -1337,14 +1993,14 @@ var DOCS_DEFAULT = [
     category: "Administrative",
     from: "ARD Office",
     to: "All Divisions",
-    subject: "ARD Clearance Guidelines",
-    status: "For ARD Clearance",
+    subject: "Regional Office Review Guidelines",
+    status: "In Progress",
     date: "2026-03-12",
     conf: false,
     confidentialityLevel: "Internal",
     priority: "Normal",
     source: "Office of the Regional Director",
-    description: "Updated guidelines for ARD clearance processes.",
+    description: "Updated guidelines for regional office review processes.",
     uploadedBy: "Sir Harry",
     kind: "outgoing",
     division: "Office of the Regional Director",
@@ -1357,14 +2013,14 @@ var DOCS_DEFAULT = [
     category: "Operations",
     from: "External Agency",
     to: "RD",
-    subject: "Endorsement for Regional Approval",
-    status: "For RD Approval",
+    subject: "Endorsement for Regional Office",
+    status: "In Progress",
     date: "2026-03-10",
     conf: false,
     confidentialityLevel: "Internal",
     priority: "High",
     source: "External Agency",
-    description: "External agency endorsement requiring regional director approval.",
+    description: "External agency endorsement routed to the regional office.",
     uploadedBy: "Sir Harry",
     kind: "incoming",
     division: "Office of the Regional Director",
@@ -1378,7 +2034,7 @@ var DOCS_DEFAULT = [
     from: "Admin Office",
     to: "ARD",
     subject: "Monthly Administrative Report",
-    status: "Approved",
+    status: "Done",
     date: "2026-03-08",
     conf: false,
     confidentialityLevel: "Internal",
@@ -1398,7 +2054,7 @@ var DOCS_DEFAULT = [
     from: "Regional Director",
     to: "All Divisions",
     subject: "Special Project Directive 2023",
-    status: "Released",
+    status: "Acknowledged",
     date: "2023-01-10",
     conf: false,
     kind: "outgoing",
@@ -1414,7 +2070,7 @@ var DOCS_DEFAULT = [
     from: "Legal Service",
     to: "RD",
     subject: "Service Agreement",
-    status: "Approved",
+    status: "Done",
     date: "2025-05-14",
     conf: false,
     kind: "incoming",
@@ -1430,7 +2086,7 @@ var DOCS_DEFAULT = [
     from: "External Partner",
     to: "DC",
     subject: "Partnership Proposal",
-    status: "Released",
+    status: "Acknowledged",
     date: "2024-02-15",
     conf: false,
     kind: "incoming",
@@ -1446,7 +2102,7 @@ var DOCS_DEFAULT = [
     from: "Supplier ABC",
     to: "FAD",
     subject: "Equipment Procurement 2022",
-    status: "Released",
+    status: "Acknowledged",
     date: "2022-11-20",
     conf: false,
     kind: "incoming",
@@ -1462,7 +2118,7 @@ var DOCS_DEFAULT = [
     from: "Internal Audit",
     to: "RD",
     subject: "Yearly Audit Report 2021",
-    status: "Approved",
+    status: "Done",
     date: "2021-05-14",
     conf: false,
     kind: "incoming",
@@ -1479,7 +2135,7 @@ var DOCS_DEFAULT = [
     from: "ORD",
     to: "FAD",
     subject: "Regional Office Restructuring 2021",
-    status: "Released",
+    status: "Acknowledged",
     date: "2021-05-19",
     conf: false,
     kind: "outgoing",
@@ -1491,7 +2147,7 @@ var DOCS_DEFAULT = [
     from: "City Government",
     to: "RD",
     subject: "Inter-Agency Cooperation Letter",
-    status: "Approved",
+    status: "Done",
     date: "2023-05-26",
     conf: false,
     kind: "incoming",
@@ -1503,7 +2159,7 @@ var DOCS_DEFAULT = [
     from: "Internal Audit",
     to: "RD",
     subject: "Five-Year Strategic Audit",
-    status: "Released",
+    status: "Acknowledged",
     date: "2016-06-01",
     conf: false,
     kind: "incoming",
@@ -1515,7 +2171,7 @@ var DOCS_DEFAULT = [
     from: "PFP Division",
     to: "RD",
     subject: "Project Endorsement",
-    status: "Approved",
+    status: "Done",
     date: "2024-06-08",
     conf: false,
     kind: "outgoing",
@@ -1528,7 +2184,7 @@ var DOCS_DEFAULT = [
     from: "Legal Office",
     to: "RD",
     subject: "Long-term Lease Agreement 2026",
-    status: "Approved",
+    status: "Done",
     date: "2026-05-10",
     conf: false,
     kind: "incoming",
@@ -1544,7 +2200,7 @@ var DOCS_DEFAULT = [
     from: "Regional Trial Court",
     to: "RD",
     subject: "Property Title Deeds - Region VII",
-    status: "Approved",
+    status: "Done",
     date: "2026-05-12",
     conf: true,
     kind: "incoming",
@@ -1560,7 +2216,7 @@ var DOCS_DEFAULT = [
     from: "Planning Division",
     to: "NEDA Central",
     subject: "Regional Development Plan 2023-2028",
-    status: "Released",
+    status: "Acknowledged",
     date: "2026-05-14",
     conf: false,
     kind: "outgoing",
@@ -1576,7 +2232,7 @@ var DOCS_DEFAULT = [
     from: "RD",
     to: "All Personnel",
     subject: "Revised Office Protocols 2026",
-    status: "Released",
+    status: "Acknowledged",
     date: "2026-05-14",
     conf: false,
     kind: "outgoing",
@@ -1610,7 +2266,7 @@ var DOCS_DEFAULT = [
     disposalDate: "03/10/2027",
     daysUntilDisposal: 300,
     disposalAction: "Archive",
-    status: "Pending Review",
+    status: "Needs Clarification",
     division: "Office of the Regional Director",
   },
   {
@@ -1624,7 +2280,7 @@ var DOCS_DEFAULT = [
     disposalDate: "05/22/2026",
     daysUntilDisposal: 8,
     disposalAction: "Transfer to National Archives",
-    status: "Overdue",
+    status: "In Progress",
     division: "Finance and Administrative Division",
   },
   {
@@ -1652,7 +2308,7 @@ var DOCS_DEFAULT = [
     disposalDate: "12/15/2026",
     daysUntilDisposal: 215,
     disposalAction: "Transfer to National Archives",
-    status: "Pending Review",
+    status: "Needs Clarification",
     division: "Monitoring and Evaluation Division",
   },
   // USER PROVIDED SAMPLES: Specifically for Disposal Management Table
@@ -1666,7 +2322,7 @@ var DOCS_DEFAULT = [
     disposalDate: "06/15/2025",
     daysUntilDisposal: -333,
     disposalAction: "Destroy",
-    status: "Overdue",
+    status: "In Progress",
     division: "Finance and Administrative Division",
   },
   {
@@ -1679,7 +2335,7 @@ var DOCS_DEFAULT = [
     disposalDate: "08/30/2025",
     daysUntilDisposal: -257,
     disposalAction: "Archive",
-    status: "Overdue",
+    status: "In Progress",
     division: "Finance and Administrative Division",
   },
   {
@@ -1692,7 +2348,7 @@ var DOCS_DEFAULT = [
     disposalDate: "09/10/2025",
     daysUntilDisposal: -246,
     disposalAction: "Archive",
-    status: "Pending Review",
+    status: "Needs Clarification",
     division: "Project Development, Investment Programming and Budget Division",
     deadline: "2026-05-18", // Adding deadline
   },
@@ -1706,7 +2362,7 @@ var DOCS_DEFAULT = [
     disposalDate: "11/20/2025",
     daysUntilDisposal: 190,
     disposalAction: "Destroy",
-    status: "Pending Review",
+    status: "Needs Clarification",
     division: "Policy Formulation and Planning Division",
     deadline: "2026-05-16", // Adding deadline
   },
@@ -1720,7 +2376,7 @@ var DOCS_DEFAULT = [
     disposalDate: "02/28/2026",
     daysUntilDisposal: 290,
     disposalAction: "Transfer",
-    status: "Scheduled",
+    status: "Scheduled for Disposal",
     division: "Office of the Regional Director",
     deadline: "2026-05-20", // Adding deadline
   },
@@ -1756,6 +2412,12 @@ function saveDocuments() {
 var DOCS = DOCS_DEFAULT;
 initializeDocuments();
 
+// Initialize notifications and read states
+loadNotifications();
+loadDocReadStates();
+loadDocumentConversations();
+loadDocumentRatings();
+
 DOCS.forEach(function (doc) {
   doc.isSample = true;
 });
@@ -1778,9 +2440,6 @@ function ensureTrail(doc) {
     var baseDate = doc.date || formatDateISO(new Date());
     var t0 = baseDate + "T08:30:00Z";
     var t1 = baseDate + "T09:15:00Z";
-    var t2 = baseDate + "T11:45:00Z";
-    var t3 = baseDate + "T14:30:00Z";
-    var t4 = baseDate + "T16:00:00Z";
 
     doc.tracking.trail.push({
       user: doc.from || "Sender",
@@ -1788,79 +2447,26 @@ function ensureTrail(doc) {
       timestamp: t0
     });
 
+    // Records-management baseline: the document was received and logged.
+    doc.tracking.trail.push({
+      user: "ORD",
+      action: "Received",
+      timestamp: t1
+    });
+
+    // End-of-life records states are appended when already set on the document.
     var status = doc.status || "";
-    if (status === "For ARD Clearance") {
+    if (status === "Archived") {
       doc.tracking.trail.push({
-        user: "ORD",
-        action: "Received",
-        timestamp: t1
+        user: doc.archivedBy || "Archive",
+        action: "Archived",
+        timestamp: (doc.archivedDate ? doc.archivedDate + "T16:30:00Z" : t1)
       });
-    } else if (status === "For RD Approval") {
+    } else if (status === "Disposed") {
       doc.tracking.trail.push({
-        user: "ORD",
-        action: "Received",
-        timestamp: t1
-      });
-      doc.tracking.trail.push({
-        user: "ARD",
-        action: "Cleared",
-        timestamp: t2
-      });
-    } else if (status === "Approved") {
-      doc.tracking.trail.push({
-        user: "ORD",
-        action: "Received",
-        timestamp: t1
-      });
-      doc.tracking.trail.push({
-        user: "ARD",
-        action: "Cleared",
-        timestamp: t2
-      });
-      doc.tracking.trail.push({
-        user: "RD",
-        action: "Approved",
-        timestamp: t3
-      });
-    } else if (status === "Released" || status === "Archived" || status === "Disposed") {
-      doc.tracking.trail.push({
-        user: "ORD",
-        action: "Received",
-        timestamp: t1
-      });
-      doc.tracking.trail.push({
-        user: "ARD",
-        action: "Cleared",
-        timestamp: t2
-      });
-      doc.tracking.trail.push({
-        user: "RD",
-        action: "Approved",
-        timestamp: t3
-      });
-      doc.tracking.trail.push({
-        user: "ORD",
-        action: "Released",
-        timestamp: t4
-      });
-      if (status === "Archived") {
-        doc.tracking.trail.push({
-          user: doc.archivedBy || "Archive",
-          action: "Archived",
-          timestamp: (doc.archivedDate ? doc.archivedDate + "T16:30:00Z" : t4)
-        });
-      } else if (status === "Disposed") {
-        doc.tracking.trail.push({
-          user: doc.disposalProcessedBy || "Disposal",
-          action: "Disposed",
-          timestamp: (doc.disposalProcessedDate ? doc.disposalProcessedDate + "T16:30:00Z" : t4)
-        });
-      }
-    } else {
-      doc.tracking.trail.push({
-        user: "ORD",
-        action: "Received",
-        timestamp: t1
+        user: doc.disposalProcessedBy || "Disposal",
+        action: "Disposed",
+        timestamp: (doc.disposalProcessedDate ? doc.disposalProcessedDate + "T16:30:00Z" : t1)
       });
     }
   }
@@ -1885,16 +2491,8 @@ function updateDocumentTracking(ref, action, user) {
     doc.tracking.lastActor = currentUser ? currentUser.role : "";
     doc.tracking.updatedBy = user;
 
-    // Update status based on action
-    if (action === "Approved") {
-      doc.status = "Approved";
-    } else if (action === "Released") {
-      doc.status = "Released";
-    } else if (action === "For RD Approval") {
-      doc.status = "For RD Approval";
-    } else if (action === "For ARD Clearance") {
-      doc.status = "For ARD Clearance";
-    }
+    // Status is managed exclusively by the recipient status dropdown
+    // (handleStatusChange). This logger only records trail events.
 
     // Refresh current view if on logbook page
     if (currentPage === "logbook") {
@@ -1996,44 +2594,108 @@ function renderDocumentTrail(ref) {
 
   h += '<div style="margin-top:1rem;text-align:right;">';
   h +=
-    '<button class="btn-sm" onclick="showPage(\'logbook\')">← Back to Logbook</button>';
+    '<button class="btn-sm" onclick="showPage(\'logbook\')">' + svgIcon("arrowleft", 14) + ' Back to Logbook</button>';
   h += "</div>";
   h += "</div>";
 
   return h;
 }
 
+/* ========= ICON SYSTEM (single consistent stroke-based SVG set) =========
+   All icons share one 24x24 grid, 1.8 stroke, round caps/joins and use
+   stroke="currentColor" so they inherit the surrounding theme colour
+   (navy in light chrome, white in the sidebar) instead of fixed emoji hues. */
+var ICON_PATHS = {
+  dashboard: '<line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/>',
+  inbox: '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  send: '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
+  folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  clipboard: '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>',
+  search: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  archive: '<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>',
+  trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>',
+  users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  bell: '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+  speaker: '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
+  filetext: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+  fileplus: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>',
+  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  mail: '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  check: '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
+  alert: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  help: '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  user: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
+  pause: '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
+  undo: '<polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/>',
+  eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  eyeoff: '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>',
+  lock: '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  print: '<polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>',
+  x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  sliders: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
+  refresh: '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
+  key: '<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3"/>',
+  box: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
+  grid: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>',
+  alertcircle: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
+  info: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
+  camera: '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>',
+  message: '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>',
+  paperclip: '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
+  tag: '<path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>',
+  building: '<path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/><path d="M9 9v.01M9 12v.01M9 15v.01M9 18v.01"/>',
+  pin: '<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>',
+  barchart: '<line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/>',
+  trending: '<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>',
+  arrowleft: '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
+  arrowright: '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
+};
+function svgIcon(name, size) {
+  var s = size || 18;
+  var body = ICON_PATHS[name] || ICON_PATHS.folder;
+  return (
+    '<svg class="icn" width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    body +
+    "</svg>"
+  );
+}
+
 var MASTER_NAV = [
   {
     label: "Main",
     items: [
-      { icon: "📊", text: "Dashboard", page: "dashboard" },
-      { icon: "📥", text: "Incoming Documents", page: "incoming" },
-      { icon: "📤", text: "Outgoing Documents", page: "outgoing" },
-      { icon: "⏳", text: "Pending Documents", page: "pending-docs" },
-      { icon: "✅", text: "Approved Documents", page: "approved" },
-      { icon: "📋", text: "Document Logbook", page: "logbook" },
+      { icon: svgIcon("dashboard"), text: "Dashboard", page: "dashboard" },
+      { icon: svgIcon("inbox"), text: "Incoming Documents", page: "incoming" },
+      { icon: svgIcon("send"), text: "Outgoing Documents", page: "outgoing" },
+      { icon: svgIcon("folder"), text: "Active Documents", page: "active-docs" },
+      { icon: svgIcon("clipboard"), text: "Document Logbook", page: "logbook" },
     ],
   },
   {
     label: "Management",
     items: [
-      { icon: "📂", text: "Documents", page: "search" },
-      { icon: "📁", text: "Archive", page: "archive" },
-      { icon: "🗑️", text: "Disposal Management", page: "disposal" },
-      { icon: "👥", text: "User Management", page: "users" },
+      { icon: svgIcon("search"), text: "Documents", page: "search" },
+      { icon: svgIcon("archive"), text: "Archive", page: "archive" },
+      { icon: svgIcon("trash"), text: "Disposal Management", page: "disposal" },
+      { icon: svgIcon("users"), text: "User Management", page: "users" },
     ],
   },
   {
     label: "Communication",
     items: [
-      { icon: "🔔", text: "Notifications", page: "notifications" },
-      { icon: "📌", text: "Bulletin Board", page: "announcements" },
+      { icon: svgIcon("bell"), text: "Notifications", page: "notifications" },
+      { icon: svgIcon("speaker"), text: "Bulletin Board", page: "announcements" },
     ],
   },
   {
     label: "Reports",
-    items: [{ icon: "📑", text: "Reports", page: "enhanced-reports" }],
+    items: [{ icon: svgIcon("filetext"), text: "Reports", page: "enhanced-reports" }],
   },
 ];
 
@@ -2070,16 +2732,6 @@ function getNav() {
         item.text = "Division Dashboard";
       if (item.page === "dashboard" && r === "staff")
         item.text = "My Dashboard";
-      if (item.page === "pending-docs" && r === "rd")
-        item.text = "Pending/For Approval";
-      if (item.page === "pending-docs" && (r === "ard" || r === "oic"))
-        item.text = "Pending/For Clearance";
-      if (item.page === "pending-docs" && r === "dc")
-        item.text = "For Clearance/Pending";
-      if (item.page === "pending-docs" && r === "staff")
-        item.text = "Assigned to Me";
-      if (item.page === "outgoing" && (r === "ard" || r === "oic"))
-        item.text = "For RD Routing";
       if (item.page === "outgoing" && r === "dc")
         item.text = "Division Outgoing";
       if (item.page === "outgoing" && r === "staff")
@@ -2176,11 +2828,11 @@ function togglePasswordVisibility(inputId, toggleId) {
 
   if (passwordInput.type === "password") {
     passwordInput.type = "text";
-    toggleIcon.textContent = "🙈";
+    toggleIcon.innerHTML = svgIcon("eyeoff", 16);
     toggleIcon.title = "Hide password";
   } else {
     passwordInput.type = "password";
-    toggleIcon.textContent = "👁️";
+    toggleIcon.innerHTML = svgIcon("eye", 16);
     toggleIcon.title = "Show password";
   }
 }
@@ -2390,14 +3042,14 @@ function toggleOICDuty(designation) {
       currentUser.roleLabel = "OIC - Regional Director";
       currentUser.division = null;
       currentUser.docAccess = "Full";
-      currentUser.funcAccess = "Approval";
+      currentUser.funcAccess = "Full";
       currentUser.features = getFeaturesForRole("rd");
     } else if (designation === "ard") {
       currentUser.role = "oic";
       currentUser.roleLabel = "OIC - Asst. Regional Director";
       currentUser.division = null;
       currentUser.docAccess = "Full";
-      currentUser.funcAccess = "Clearance";
+      currentUser.funcAccess = "Full";
       currentUser.features = getFeaturesForRole("oic");
     }
 
@@ -2431,10 +3083,10 @@ function showOICRequestModal(designation) {
     '<div class="modal-overlay open" id="oic-request-modal">' +
     '<div class="modal" style="max-width:500px; border-radius:16px; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.1); border:none;">' +
     '<div class="modal-head" style="background:linear-gradient(to right, #d97706, #f59e0b); color:#fff; padding:1.25rem 1.5rem;">' +
-    '<h3 style="margin:0; font-size:1.15rem; font-weight:700; color:#fff;">🔒 Security Clearance Required</h3>' +
+    '<h3 style="margin:0; font-size:1.15rem; font-weight:700; color:#fff;"> ' + svgIcon("key", 18) + ' Security Clearance Required</h3>' +
     '</div>' +
     '<div class="modal-body" style="padding:1.75rem; background:#fff; text-align:center;">' +
-    '<div style="font-size:36px; margin-bottom:1rem;">⏳</div>' +
+    '<div style="font-size:36px; margin-bottom:1rem;">' + svgIcon("clock", 40) + '</div>' +
     '<h4 style="margin:0 0 0.5rem; color:#1e293b; font-size:1.1rem;">Request Sent for OIC Approval</h4>' +
     '<p style="margin:0; font-size:13px; color:#64748b; line-height:1.6;">' +
     'Your request to temporarily act as <strong>OIC for ' + roleText + '</strong> requires security authorization. ' +
@@ -2566,22 +3218,22 @@ function showApp() {
 
       var optNormal = document.createElement("option");
       optNormal.value = "";
-      optNormal.textContent = "💼 Division Chief";
+      optNormal.textContent = "Division Chief";
       if (!originalUserState && !u.oicRequest) optNormal.selected = true;
 
       var optOicRd = document.createElement("option");
       optOicRd.value = "rd";
       var rdCleared = u.oicApproved === "rd";
       if (u.oicRequest === "rd") {
-        optOicRd.textContent = "⏳ Pending OIC RD Approval...";
+        optOicRd.textContent = "Pending OIC RD Approval...";
         optOicRd.selected = true;
         optOicRd.disabled = true; // pending — cannot re-select, only cancel
       } else if (rdCleared) {
-        optOicRd.textContent = "👑 Acting OIC - RD (Cleared)";
+        optOicRd.textContent = "Acting OIC - RD (Cleared)";
         if (originalUserState && currentUser.role === "rd") optOicRd.selected = true;
       } else {
         // Not approved and not pending — disable so DC cannot click it
-        optOicRd.textContent = "👑 Acting OIC - RD (Not Assigned)";
+        optOicRd.textContent = "Acting OIC - RD (Not Assigned)";
         optOicRd.disabled = true;
         optOicRd.title = "You have not been designated OIC for RD. Contact Admin or RD.";
       }
@@ -2590,15 +3242,15 @@ function showApp() {
       optOicArd.value = "ard";
       var ardCleared = u.oicApproved === "ard";
       if (u.oicRequest === "ard") {
-        optOicArd.textContent = "⏳ Pending OIC ARD Approval...";
+        optOicArd.textContent = "Pending OIC ARD Approval...";
         optOicArd.selected = true;
         optOicArd.disabled = true; // pending — cannot re-select
       } else if (ardCleared) {
-        optOicArd.textContent = "⚡ Acting OIC - ARD (Cleared)";
+        optOicArd.textContent = "Acting OIC - ARD (Cleared)";
         if (originalUserState && currentUser.role === "oic") optOicArd.selected = true;
       } else {
         // Not approved and not pending — disable so DC cannot click it
-        optOicArd.textContent = "⚡ Acting OIC - ARD (Not Assigned)";
+        optOicArd.textContent = "Acting OIC - ARD (Not Assigned)";
         optOicArd.disabled = true;
         optOicArd.title = "You have not been designated OIC for ARD. Contact Admin, ARD, or RD.";
       }
@@ -2685,9 +3337,12 @@ function renderNav() {
         "</div>";
     });
   });
-  html +=
-    '<div class="sb-item" onclick="doLogout()" id="nav-signout" title="Sign out" data-tooltip="Sign out"><span class="sb-icon">⬅</span><span class="sb-item-text">Sign out</span></div>';
+  // Sign out is rendered statically at the bottom of the sidebar (see #nav-signout in HTML),
+  // unconditionally for all roles — it is intentionally NOT part of the filtered nav list.
   el.innerHTML = html;
+  
+  // Update notification badge
+  updateNotificationBadge(getUnreadNotificationCount());
 }
 
 function showPage(page) {
@@ -2721,15 +3376,8 @@ function showPage(page) {
   if (el) el.classList.add("active");
   var titles = {
     dashboard: "Dashboard",
-    incoming:
-      currentUser.role === "rd"
-        ? "Pending/For Approval"
-        : ["ard", "oic"].includes(currentUser.role)
-          ? "Pending/For Clearance"
-          : currentUser.role === "dc"
-            ? "For Clearance/Pending"
-            : "Incoming Documents",
-    "pending-docs": "Pending Documents",
+    incoming: "Incoming Documents",
+    "active-docs": "Active Documents",
     outgoing: "Outgoing Documents",
     logbook: "Admin Logbook — Document Intake",
     "document-trail": "Document Trail",
@@ -2739,7 +3387,6 @@ function showPage(page) {
     disposal: "Disposal Management",
     notifications: "Notifications",
     reports: "Reports",
-    approved: "Approved Documents",
     announcements: "Bulletin Board",
     "enhanced-reports": "Reports",
   };
@@ -2755,7 +3402,6 @@ function showPage(page) {
   else if (page === "users") c.innerHTML = titleHeader + renderUsers();
   else if (page === "search") c.innerHTML = titleHeader + renderSearch();
   else if (page === "reports") c.innerHTML = titleHeader + renderReports();
-  else if (page === "approved") c.innerHTML = titleHeader + renderApproved();
   else if (page === "compose") c.innerHTML = titleHeader + renderCompose();
   else if (page === "profile") c.innerHTML = titleHeader + renderProfile();
   else if (page === "settings") c.innerHTML = titleHeader + renderSettings();
@@ -2767,14 +3413,14 @@ function showPage(page) {
   }
   else if (page === "outgoing") c.innerHTML = titleHeader + renderOutgoing();
   else if (page === "incoming") c.innerHTML = titleHeader + renderIncoming();
-  else if (page === "pending-docs") c.innerHTML = titleHeader + renderPendingDocs();
+  else if (page === "active-docs") c.innerHTML = titleHeader + renderActiveDocs();
   else if (page === "logbook") c.innerHTML = titleHeader + renderLogbook();
   else if (page === "document-trail")
     c.innerHTML = titleHeader + renderDocumentTrail(currentEditingRef || "");
   else
     c.innerHTML =
       titleHeader +
-      '<div class="card" style="padding:2rem;text-align:center;color:var(--muted)"><div style="font-size:40px;margin-bottom:1rem">🚧</div><div style="font-size:16px">This section is under development.</div></div>';
+      '<div class="card" style="padding:2rem;text-align:center;color:var(--muted)"><div style="font-size:40px;margin-bottom:1rem">' + svgIcon("alert", 40) + '</div><div style="font-size:16px">This section is under development.</div></div>';
   showLoading(false);
 }
 
@@ -2788,15 +3434,18 @@ function renderPageHeader(title) {
 
 function statusPill(s) {
   if (!s) return '<span class="pill pill-blue">New</span>';
+  // End-of-life records states
   if (s === "Archived" || s === "Disposed" || s === "For Disposal Review")
     return '<span class="pill pill-gray">' + s + "</span>";
-  if (s === "Approved" || s === "Received" || s === "Routed")
+  // Recipient status set (the sole workflow model) + records receipt events
+  if (s === "Acknowledged" || s === "Done" || s === "Received" || s === "Routed")
     return '<span class="pill pill-green">' + s + "</span>";
-  if (s === "Released")
-    return '<span class="pill pill-purple">' + s + "</span>";
-  if (s === "For RD Approval" || s === "For ARD Clearance" || s === "Pending" || s === "In Review")
+  if (s === "In Progress")
     return '<span class="pill pill-amber">' + s + "</span>";
-  if (s === "Rejected" || s === "Disapproved") return '<span class="pill pill-red">' + s + "</span>";
+  if (s === "Needs Clarification" || s === "On Hold" || s === "Rejected")
+    return '<span class="pill pill-red">' + s + "</span>";
+  if (s === "Sent")
+    return '<span class="pill pill-purple">' + s + "</span>";
   if (s === "New") return '<span class="pill pill-blue">New</span>';
   return '<span class="pill pill-blue">' + s + "</span>";
 }
@@ -2829,8 +3478,46 @@ function renderStatusDropdown(docRef, currentStatus, isEditable) {
   
   console.log('  → Returning dropdown');
   
-  // Build actual HTML select dropdown
-  var html = '<select class="status-dropdown" data-doc-ref="' + escapeHtml(docRef) + '" onchange="handleStatusChange(this)" style="padding:4px 8px;border:1px solid #d0d0d0;border-radius:4px;font-size:12px;background:white;cursor:pointer;min-width:140px">';
+  // Determine color scheme based on current status (matching pill colors)
+  var bgColor = '#eaf0fa'; // default blue
+  var textColor = '#1e4f99'; // default info
+  
+  if (status === 'Acknowledged' || status === 'Done') {
+    bgColor = '#e6f9f1'; // green
+    textColor = '#22c55e';
+  } else if (status === 'In Progress') {
+    bgColor = '#fff8e6'; // amber
+    textColor = '#b98623';
+  } else if (status === 'Needs Clarification' || status === 'On Hold') {
+    bgColor = '#fdeaea'; // red
+    textColor = '#dc2626';
+  } else if (status === 'Sent') {
+    bgColor = '#f3e8ff'; // purple
+    textColor = '#7e22ce';
+  }
+  
+  // Build styled HTML select dropdown matching pill design
+  var html = '<select class="status-dropdown" data-doc-ref="' + escapeHtml(docRef) + '" onchange="handleStatusChange(this)" style="' +
+    'display:inline-flex;' +
+    'align-items:center;' +
+    'padding:2px 10px;' +
+    'border-radius:20px;' +
+    'font-size:11px;' +
+    'font-weight:600;' +
+    'background:' + bgColor + ';' +
+    'color:' + textColor + ';' +
+    'border:1px solid ' + textColor + '30;' +
+    'cursor:pointer;' +
+    'min-width:140px;' +
+    'appearance:none;' +
+    '-webkit-appearance:none;' +
+    '-moz-appearance:none;' +
+    'padding-right:24px;' +
+    'background-image:url(\'data:image/svg+xml;utf8,<svg fill=\"' + encodeURIComponent(textColor) + '\" height=\"16\" width=\"16\" viewBox=\"0 0 16 16\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M4 6l4 4 4-4z\"/></svg>\');' +
+    'background-repeat:no-repeat;' +
+    'background-position:right 6px center;' +
+    'background-size:12px;' +
+    '">';
   
   workflowStatuses.forEach(function(opt) {
     var selected = (opt.value === status) ? ' selected' : '';
@@ -3053,20 +3740,14 @@ function getUserLogbookDocs(userRole) {
   if (userRole === "admin") {
     return DOCS; // Admin sees all documents
   } else if (userRole === "rd") {
-    // RD sees documents for their approval and approved documents
+    // RD sees documents routed to the RD office
     return DOCS.filter(function (d) {
-      return (
-        d.to === "RD" || d.status === "Approved" || d.status === "Released"
-      );
+      return d.to === "RD";
     });
   } else if (userRole === "ard") {
-    // ARD sees documents for their clearance and related documents
+    // ARD sees documents routed to or from the ARD office
     return DOCS.filter(function (d) {
-      return (
-        d.to === "ARD" ||
-        d.status === "For ARD Clearance" ||
-        d.from.includes("ARD")
-      );
+      return d.to === "ARD" || d.from.includes("ARD");
     });
   }
   return DOCS;
@@ -3231,25 +3912,6 @@ function resolveRecipient(label) {
   return null;
 }
 
-function getRoutingStatusForRecipient(to) {
-  var recipient = resolveRecipient(to);
-  var candidate = (recipient && recipient.role) || to || "";
-  candidate = candidate.toLowerCase();
-  if (candidate.indexOf("rd") !== -1 || candidate.indexOf("regional director") !== -1)
-    return "For RD Approval";
-  if (candidate.indexOf("ard") !== -1 || candidate.indexOf("assistant regional director") !== -1)
-    return "For ARD Clearance";
-  if (candidate.indexOf("division chief") !== -1 || candidate.indexOf("chief") !== -1)
-    return "For Division Clearance";
-  if (candidate.indexOf("custodian") !== -1)
-    return "For ARD Clearance";
-  if (candidate.indexOf("staff") !== -1)
-    return "For Staff Action";
-  if (candidate.indexOf("supervisor") !== -1)
-    return "For Supervisor Review";
-  return "Sent to " + to;
-}
-
 function escapeHtml(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -3372,103 +4034,45 @@ function renderDashboard() {
     '<div style="text-align:right"><div style="font-size:13px;color:rgba(255,255,255,.5)">Today</div><div style="font-size:18px;font-weight:600">' + formatManilaDate(new Date()) + '</div></div>';
   h += "</div>";
 
+  // Records-tracking metrics (computed from visible documents by recipient status)
+  var cntIncoming = visibleDocs.filter(function (d) { return d.kind === "incoming"; }).length;
+  var cntSent = visibleDocs.filter(function (d) { return d.status === "Sent"; }).length;
+  var cntAck = visibleDocs.filter(function (d) { return d.status === "Acknowledged"; }).length;
+  var cntProgress = visibleDocs.filter(function (d) { return d.status === "In Progress"; }).length;
+  var cntClarification = visibleDocs.filter(function (d) { return d.status === "Needs Clarification"; }).length;
+  var cntOnHold = visibleDocs.filter(function (d) { return d.status === "On Hold"; }).length;
+  var cntDone = visibleDocs.filter(function (d) { return d.status === "Done"; }).length;
+  var nearDeadlineCount = checkNearDeadlines().length;
+
   h += '<div class="stats-row">';
   if (r === "admin") {
-    h += statCard("📥", "Total Received", "142", "This month", "var(--info)");
-    h += statCard(
-      "⏳",
-      "Pending Action",
-      "18",
-      "Across all divisions",
-      "var(--warn)",
-    );
-    h += statCard(
-      "✅",
-      "Released Today",
-      "7",
-      "Documents processed",
-      "var(--success)",
-    );
-    h += statCard(
-      "⚠️",
-      "Deadline Alerts",
-      "3",
-      "Within 3 days",
-      "var(--danger)",
-    );
+    h += statCard(svgIcon("layers", 20), "Total Records", visibleDocs.length, "All documents", "var(--navy)");
+    h += statCard(svgIcon("clock", 20), "In Progress", cntProgress, "Currently active", "var(--navy)");
+    h += statCard(svgIcon("check", 20), "Done", cntDone, "Completed records", "var(--gold)");
+    h += statCard(svgIcon("alert", 20), "Deadline Alerts", nearDeadlineCount, "Within 7 days", "var(--danger)");
   } else if (r === "rd") {
-    h += statCard(
-      "📋",
-      "Pending/For Approval",
-      "4",
-      "Awaiting your signature",
-      "var(--warn)",
-    );
-    h += statCard(
-      "✅",
-      "Approved This Week",
-      "11",
-      "Documents signed",
-      "var(--success)",
-    );
-    h += statCard("📤", "Released", "8", "Outgoing documents", "var(--info)");
-    h += statCard("⚠️", "Overdue", "1", "Action required", "var(--danger)");
+    h += statCard(svgIcon("inbox", 20), "Received", cntIncoming, "Incoming records", "var(--navy)");
+    h += statCard(svgIcon("clock", 20), "In Progress", cntProgress, "Currently active", "var(--navy)");
+    h += statCard(svgIcon("check", 20), "Done", cntDone, "Completed records", "var(--gold)");
+    h += statCard(svgIcon("help", 20), "Needs Clarification", cntClarification, "Awaiting response", "var(--danger)");
   } else if (r === "ard" || r === "oic") {
-    h += statCard(
-      "🔍",
-      "Pending/For Clearance",
-      "2",
-      "Pending endorsement",
-      "var(--warn)",
-    );
-    h += statCard("➡️", "Forwarded to RD", "9", "This week", "var(--info)");
-    h += statCard("✅", "Cleared", "5", "Documents endorsed", "var(--success)");
-    h += statCard("🔔", "Alerts", "2", "Deadline reminders", "var(--danger)");
+    h += statCard(svgIcon("inbox", 20), "Received", cntIncoming, "Incoming records", "var(--navy)");
+    h += statCard(svgIcon("send", 20), "Sent", cntSent, "Outgoing records", "var(--navy)");
+    h += statCard(svgIcon("clock", 20), "In Progress", cntProgress, "Currently active", "var(--navy)");
+    h += statCard(svgIcon("check", 20), "Done", cntDone, "Completed records", "var(--gold)");
   } else if (r === "dc") {
-    var incomingCount = visibleDocs.filter((d) => d.kind === "incoming").length;
-    var completedCount = visibleDocs.filter(
-      (d) => d.status === "Completed",
-    ).length;
     var staffCount = USER_ACCOUNTS.filter(
       (u) => u.division === currentUser.division && u.role === "Staff",
     ).length;
-
-    h += statCard(
-      "📥",
-      "For Clearance/Pending",
-      incomingCount,
-      "In your division",
-      "var(--info)",
-    );
-    h += statCard("📤", "For Submission", "1", "Ready for ARD", "var(--warn)");
-    h += statCard(
-      "✅",
-      "Completed",
-      completedCount || "14",
-      "This month",
-      "var(--success)",
-    );
-    h += statCard(
-      "👤",
-      "Staff Assigned",
-      staffCount || "3",
-      "Active tasks",
-      "var(--navy)",
-    );
+    h += statCard(svgIcon("inbox", 20), "Incoming", cntIncoming, "In your division", "var(--navy)");
+    h += statCard(svgIcon("clock", 20), "In Progress", cntProgress, "Currently active", "var(--navy)");
+    h += statCard(svgIcon("check", 20), "Done", cntDone, "Completed records", "var(--gold)");
+    h += statCard(svgIcon("users", 20), "Staff Assigned", staffCount || "3", "Division staff", "var(--navy)");
   } else {
-    var assignedCount = visibleDocs.filter(
-      (d) => d.kind === "incoming" && d.status === "Pending",
-    ).length;
-    h += statCard(
-      "📌",
-      "Assigned to Me",
-      assignedCount || "2",
-      "Requires action",
-      "var(--warn)",
-    );
-    h += statCard("📝", "In Progress", "1", "Being prepared", "var(--info)");
-    h += statCard("✅", "Submitted", "5", "This month", "var(--success)");
-    h += statCard("🔔", "Notifications", "2", "Unread", "var(--danger)");
+    h += statCard(svgIcon("inbox", 20), "Assigned to Me", cntIncoming, "Incoming records", "var(--navy)");
+    h += statCard(svgIcon("clock", 20), "In Progress", cntProgress, "Currently active", "var(--navy)");
+    h += statCard(svgIcon("check", 20), "Done", cntDone, "Completed records", "var(--gold)");
+    h += statCard(svgIcon("help", 20), "Needs Clarification", cntClarification, "Awaiting response", "var(--danger)");
   }
   h += "</div>";
 
@@ -3482,7 +4086,7 @@ function renderDashboard() {
     return !(d.conf && r === "staff");
   }).slice(0, 5);
   if (recentDocs.length === 0) {
-    h += emptyStateRow(3, "📄", "No recent documents", "Your recent documents will appear here.");
+    h += emptyStateRow(3, svgIcon("filetext", 40), "No recent documents", "Your recent documents will appear here.");
   } else {
     recentDocs.forEach(function (d) {
       h +=
@@ -3510,19 +4114,21 @@ function renderDashboard() {
   h += '  </div>';
   h += '</div>';
 
-  // Workflow tracker
+  // Status distribution (records-tracking view of the recipient status set)
   h +=
-    '<div class="card"><div class="card-head"><div class="card-title">Workflow Pipeline</div></div>';
+    '<div class="card"><div class="card-head"><div class="card-title">Status Distribution</div></div>';
   h += '<div style="display:flex;flex-direction:column;gap:.6rem">';
   var stages = [
-    { label: "Received by ORD", count: 12, color: "var(--info)" },
-    { label: "For ARD Clearance", count: 4, color: "var(--warn)" },
-    { label: "For RD Approval", count: 3, color: "var(--gold)" },
-    { label: "Approved — For Release", count: 5, color: "var(--success)" },
-    { label: "Released / Archived", count: 118, color: "var(--muted)" },
+    { label: "Sent", count: cntSent, color: "var(--navy3)" },
+    { label: "Acknowledged", count: cntAck, color: "var(--navy2)" },
+    { label: "In Progress", count: cntProgress, color: "var(--navy)" },
+    { label: "Needs Clarification", count: cntClarification, color: "var(--warn)" },
+    { label: "On Hold", count: cntOnHold, color: "var(--muted)" },
+    { label: "Done", count: cntDone, color: "var(--gold)" },
   ];
+  var stageTotal = Math.max(1, visibleDocs.length);
   stages.forEach(function (s) {
-    var pct = Math.min(100, Math.round((s.count / 118) * 100)) + 2;
+    var pct = Math.min(100, Math.round((s.count / stageTotal) * 100));
     h +=
       '<div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span>' +
       s.label +
@@ -3542,7 +4148,7 @@ function renderDashboard() {
   // Dynamic Deadline alerts
   var deadlines = checkNearDeadlines();
   h +=
-    '<div class="card mb15 mt1" style="margin-top:1.25rem"><div class="card-head"><div class="card-title">⚠️ Deadline Alerts</div><div style="font-size:12px;color:var(--muted)">' +
+    '<div class="card mb15 mt1" style="margin-top:1.25rem"><div class="card-head"><div class="card-title"> ' + svgIcon("alert", 15) + ' Deadline Alerts</div><div style="font-size:12px;color:var(--muted)">' +
     deadlines.length +
     " active alerts</div></div>";
 
@@ -3593,80 +4199,28 @@ function statCard(icon, label, val, sub, color) {
   );
 }
 
-function renderApproved() {
-  var userDocs = getVisibleDocumentsForRole();
-  var approvedDocs = userDocs.filter(function (d) {
-    return d.status === "Approved" || d.status === "Released";
-  });
-
-  var h = "";
-  h += '<div class="card">';
-  h += '<div class="card-head">';
-  h += '<div class="card-title">Approved Documents</div>';
-  h +=
-    '<div style="font-size:12px;color:var(--muted)">' +
-    approvedDocs.length +
-    " records found</div>";
-  h += "</div>";
-
-  if (approvedDocs.length === 0) {
-    h += '<div class="doc-table-wrap"><table class="doc-table"><tbody>' + emptyStateRow(7, "✅", "No approved documents", "Documents that have been approved will appear here.") + '</tbody></table></div>';
-  } else {
-    h +=
-      '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference</th><th>Type</th><th>Division</th><th>Subject</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
-    approvedDocs.forEach(function (d) {
-      var divFull = d.division || "";
-      var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
-      h +=
-        '<tr><td style="font-family:monospace;font-weight:600">' +
-        d.ref +
-        "</td><td>" +
-        d.type +
-        "</td><td title=\"" + escapeHtml(divFull) + "\">" +
-        divAbbrev +
-        "</td><td>" +
-        d.subject +
-        "</td><td>" +
-        d.date +
-        "</td><td>" +
-        statusPill(d.status) +
-        '</td><td style="text-align:right">' +
-        '<div style="display:flex;gap:.35rem;justify-content:flex-end">' +
-        '<button class="btn-sm" onclick="viewDoc(\'' +
-        d.ref +
-        "')\">View</button>" +
-        '<button class="btn-sm" onclick="printDocument(\'' +
-        d.ref +
-        "')\">Print</button>" +
-        "</div></td></tr>";
-    });
-    h += "</tbody></table></div>";
-  }
-  h += "</div>";
-  return h;
-}
-
-function renderPendingDocs() {
+function renderActiveDocs() {
   var visibleDocs = getVisibleDocumentsForRole();
-  var pendingDocs = visibleDocs.filter(function (d) {
-    var completedStates = ["Approved", "Released", "Archived", "Rejected"];
-    return !completedStates.includes(d.status);
+  // Records-tracking view: everything still in flight (not yet Done, Archived, or Disposed).
+  var activeDocs = visibleDocs.filter(function (d) {
+    var closedStates = ["Done", "Archived", "Disposed"];
+    return !closedStates.includes(d.status);
   });
 
   var h = "";
   h +=
-    '<div style="font-size:12px;color:var(--muted);margin:-.5rem 0 1rem 0">Aggregated view of all in-progress incoming and outgoing records.</div>';
+    '<div style="font-size:12px;color:var(--muted);margin:-.5rem 0 1rem 0">Aggregated view of all in-flight incoming and outgoing records.</div>';
   h +=
-    '<div class="card"><div class="card-head"><div class="card-title">Pending Documents</div><div style="font-size:12px;color:var(--muted)">' +
-    pendingDocs.length +
+    '<div class="card"><div class="card-head"><div class="card-title">Active Documents</div><div style="font-size:12px;color:var(--muted)">' +
+    activeDocs.length +
     " records</div></div>";
   h +=
     '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference No.</th><th>Direction</th><th>Type</th><th>From</th><th>Division</th><th>Subject</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
 
-  if (pendingDocs.length === 0) {
-    h += emptyStateRow(9, "⏳", "No pending documents", "In-progress documents will appear here.");
+  if (activeDocs.length === 0) {
+    h += emptyStateRow(9, svgIcon("folder", 40), "No active documents", "Documents that are still in flight will appear here.");
   } else {
-    pendingDocs.forEach(function (d) {
+    activeDocs.forEach(function (d) {
       var conf = d.conf
         ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>'
         : "";
@@ -3714,25 +4268,31 @@ function renderIncoming() {
   });
   var h = "";
   h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">';
-  h += '<div class="tab-bar" id="in-tabs"><div class="tab active" onclick="setTab(this,\'all\')">All</div><div class="tab" onclick="setTab(this,\'pending\')">Pending</div><div class="tab" onclick="setTab(this,\'approved\')">Approved</div><div class="tab" onclick="setTab(this,\'released\')">Released</div></div>';
+  h += '<div class="tab-bar" id="in-tabs"><div class="tab active" onclick="setTab(this,\'all\')">All</div><div class="tab" onclick="setTab(this,\'active\')">Active</div><div class="tab" onclick="setTab(this,\'clarification\')">Needs Clarification</div><div class="tab" onclick="setTab(this,\'onhold\')">On Hold</div><div class="tab" onclick="setTab(this,\'done\')">Done</div></div>';
   h += "</div>";
   h += '<div class="card"><div class="card-head"><div class="card-title">' +
-    (currentUser.role === "rd" ? "Pending/For Approval" : ["ard", "oic"].includes(currentUser.role) ? "Pending/For Clearance" : currentUser.role === "dc" ? "For Clearance/Pending" : "Incoming Documents") +
+    "Incoming Documents" +
     '</div><div id="incoming-count" style="font-size:12px;color:var(--muted)">' + incomingDocs.length + " records</div></div>";
-  h += '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference No.</th><th>Direction</th><th>Type</th><th>From</th><th>Division</th><th>Subject</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody id="incoming-tbody">';
+  h += '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference No.</th><th>Direction</th><th>Type</th><th>From</th><th>Division</th><th>Subject</th><th>Priority</th><th>Status</th><th>Actions</th></tr></thead><tbody id="incoming-tbody">';
   if (incomingDocs.length === 0) {
-    h += emptyStateRow(9, "📭", "No incoming documents", "Documents addressed to you will appear here.");
+    h += emptyStateRow(9, svgIcon("inbox", 40), "No incoming documents", "Documents addressed to you will appear here.");
   } else {
     incomingDocs.forEach(function (d) {
       var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>' : "";
       var divFull = d.division || "";
       var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
+      var directionBadge = d.direction === "incoming" 
+        ? '<span class="direction-badge direction-incoming">INCOMING</span>'
+        : '<span class="direction-badge direction-outgoing">OUTGOING</span>';
+      var priorityBadge = d.priority && d.priority !== "Normal" 
+        ? '<span class="pill pill-' + (d.priority === "Urgent" || d.priority === "High" ? "red" : "amber") + '" style="margin-left:4px">' + d.priority + '</span>'
+        : "";
       
       // Use centralized recipient check
       var isRecipient = isCurrentUserRecipient(d);
       var statusDisplay = renderStatusDropdown(d.ref, d.status, isRecipient);
       
-      h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + flowPill('incoming') + "</td><td>" + d.type + conf + "</td><td>" + d.from + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + d.date + "</td><td>" + statusDisplay + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
+      h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + directionBadge + "</td><td>" + d.type + conf + "</td><td>" + d.from + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + priorityBadge + "</td><td>" + statusDisplay + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
     });
   }
   h += "</tbody></table></div></div>";
@@ -3747,23 +4307,29 @@ function renderOutgoing() {
   });
   var h = "";
   h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">';
-  h += '<div class="tab-bar" id="out-tabs"><div class="tab active" onclick="setTab(this,\'all\')">All</div><div class="tab" onclick="setTab(this,\'pending\')">Pending</div><div class="tab" onclick="setTab(this,\'released\')">Released</div></div>';
+  h += '<div class="tab-bar" id="out-tabs"><div class="tab active" onclick="setTab(this,\'all\')">All</div><div class="tab" onclick="setTab(this,\'active\')">Active</div><div class="tab" onclick="setTab(this,\'onhold\')">On Hold</div><div class="tab" onclick="setTab(this,\'done\')">Done</div></div>';
   h += "</div>";
   h += '<div class="card"><div class="card-head"><div class="card-title">Outgoing Documents</div><div id="outgoing-count" style="font-size:12px;color:var(--muted)">' + outgoingDocs.length + " records</div></div>";
-  h += '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference No.</th><th>Direction</th><th>Type</th><th>To</th><th>Division</th><th>Subject</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody id="outgoing-tbody">';
+  h += '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference No.</th><th>Direction</th><th>Type</th><th>To</th><th>Division</th><th>Subject</th><th>Priority</th><th>Status</th><th>Actions</th></tr></thead><tbody id="outgoing-tbody">';
   if (outgoingDocs.length === 0) {
-    h += emptyStateRow(9, "📤", "No outgoing documents", "Documents you send will appear here.");
+    h += emptyStateRow(9, svgIcon("send", 40), "No outgoing documents", "Documents you send will appear here.");
   } else {
     outgoingDocs.forEach(function (d) {
       var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>' : "";
       var divFull = d.division || "";
       var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
+      var directionBadge = d.direction === "incoming" 
+        ? '<span class="direction-badge direction-incoming">INCOMING</span>'
+        : '<span class="direction-badge direction-outgoing">OUTGOING</span>';
+      var priorityBadge = d.priority && d.priority !== "Normal" 
+        ? '<span class="pill pill-' + (d.priority === "Urgent" || d.priority === "High" ? "red" : "amber") + '" style="margin-left:4px">' + d.priority + '</span>'
+        : "";
       
       // Use centralized recipient check
       var isRecipient = isCurrentUserRecipient(d);
       var statusDisplay = renderStatusDropdown(d.ref, d.status, isRecipient);
       
-      h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + flowPill('outgoing') + "</td><td>" + d.type + conf + "</td><td>" + d.to + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + d.date + "</td><td>" + statusDisplay + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
+      h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + directionBadge + "</td><td>" + d.type + conf + "</td><td>" + d.to + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + d.subject + "</td><td>" + priorityBadge + "</td><td>" + statusDisplay + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
     });
   }
   h += "</tbody></table></div></div>";
@@ -3823,7 +4389,7 @@ function renderLogbook() {
       '<div style="font-size:18px;font-weight:600;color:var(--navy);">Divisions Logbook</div>';
     h += "</div>";
     h +=
-      '<div style="display:flex;gap:.5rem"><button class="btn-sm" onclick="openManualLogbook()">✍️ Manual Logbook</button><button class="btn-sm" onclick="window.print()">🖨️ Print</button><button class="btn-sm" onclick="exportLogbookCSV()">⬇️ Export CSV</button></div>';
+      '<div style="display:flex;gap:.5rem"><button class="btn-sm" onclick="openManualLogbook()"> ' + svgIcon("edit", 14) + ' Manual Logbook</button><button class="btn-sm" onclick="window.print()"> ' + svgIcon("print", 14) + ' Print</button><button class="btn-sm" onclick="exportLogbookCSV()"> ' + svgIcon("download", 14) + ' Export CSV</button></div>';
     h += "</div>";
 
     h += renderSimpleLogbookNavigation();
@@ -3837,7 +4403,7 @@ function renderLogbook() {
     '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">';
   h += '<div style="font-size:12px;color:var(--muted)">Initial intake and recording point for documents entering the DRMS. Documents listed here are awaiting classification, processing, or routing.</div>';
   h +=
-    '<div style="display:flex;gap:.5rem"><button class="btn-sm" onclick="openManualLogbook()">✍️ Manual Entry</button><button class="btn-sm" onclick="window.print()">🖨️ Print</button><button class="btn-sm" onclick="exportLogbookCSV()">⬇️ Export CSV</button></div>';
+    '<div style="display:flex;gap:.5rem"><button class="btn-sm" onclick="openManualLogbook()"> ' + svgIcon("edit", 14) + ' Manual Entry</button><button class="btn-sm" onclick="window.print()"> ' + svgIcon("print", 14) + ' Print</button><button class="btn-sm" onclick="exportLogbookCSV()"> ' + svgIcon("download", 14) + ' Export CSV</button></div>';
   h += "</div>";
 
   if (isGlobalLogbookRole(currentUser.role) || currentUser.role === "dc") {
@@ -3854,6 +4420,7 @@ function renderLogbook() {
   h += '<div class="card"><div style="overflow-x:auto"><table class="doc-table"><thead><tr>' +
     '<th>#</th>' +
     '<th>Reference No.</th>' +
+    '<th>Direction</th>' +
     '<th>Subject</th>' +
     '<th>Type</th>' +
     '<th>Category</th>' +
@@ -3864,10 +4431,11 @@ function renderLogbook() {
     '<th>Current Handler / Division</th>' +
     '<th>Status</th>' +
     '<th>Ver.</th>' +
+    '<th>Rating</th>' +
     '<th>Actions</th>' +
     '</tr></thead><tbody>';
   if (visibleDocs.length === 0) {
-    h += emptyStateRow(13, "📋", "No logbook entries", "Documents logged in this view will appear here.");
+    h += emptyStateRow(15, svgIcon("clipboard", 40), "No logbook entries", "Documents logged in this view will appear here.");
   }
   visibleDocs.forEach(function (d, i) {
     var divFull = d.division || "";
@@ -3883,6 +4451,11 @@ function renderLogbook() {
     var priority = escapeHtml(d.priority || d.metadata && d.metadata.priority || '—');
     var uploadedBy = escapeHtml(d.uploadedBy || d.from || '—');
     var handler = escapeHtml(d.to || divAbbrev);
+    var directionBadge = d.direction === "incoming" 
+      ? '<span class="direction-badge direction-incoming">INCOMING</span>'
+      : d.direction === "outgoing"
+      ? '<span class="direction-badge direction-outgoing">OUTGOING</span>'
+      : '<span style="color:var(--muted);font-size:11px">—</span>';
     
     // Determine if current user is the recipient (can edit status)
     var isRecipient = (d.to && d.to === currentUser.name) || (d.division && d.division === currentUser.division && (currentUser.role === 'dc' || currentUser.role === 'staff'));
@@ -3891,6 +4464,7 @@ function renderLogbook() {
     h += '<tr' + rowStyle + '>' +
       '<td style="color:var(--muted)">' + (i + 1) + '</td>' +
       '<td style="font-family:monospace;font-size:12px;font-weight:600">' + escapeHtml(d.ref) + newBadge + '</td>' +
+      '<td>' + directionBadge + '</td>' +
       '<td>' + escapeHtml(d.subject) + '</td>' +
       '<td>' + escapeHtml(d.type || '—') + conf + '</td>' +
       '<td>' + category + '</td>' +
@@ -3901,6 +4475,7 @@ function renderLogbook() {
       '<td title="' + escapeHtml(divFull) + '">' + handler + '</td>' +
       '<td>' + statusDisplay + '</td>' +
       '<td style="font-weight:700;color:var(--navy3);font-size:12px">' + ver + '</td>' +
+      '<td>' + renderRatingCell(d) + '</td>' +
       '<td>' + renderLogbookActionsMenu(d.ref) + '</td>' +
       '</tr>';
   });
@@ -3939,65 +4514,65 @@ function renderSimpleLogbookNavigation() {
     h +=
       '<button class="nav-btn ' +
       (currentLogbookView === "my" ? "active" : "") +
-      '" onclick="openMyLogbook()">📋 My Logbook</button>';
+      '" onclick="openMyLogbook()"> ' + svgIcon("clipboard", 14) + ' My Logbook</button>';
     if (r === "admin") {
       h +=
         '<button class="nav-btn ' +
         ((currentLogbookView === "divisions" || currentLogbookView === "division") ? "active" : "") +
-        '" onclick="openDivisionsLogbook()">📁 Divisions Logbook</button>';
+        '" onclick="openDivisionsLogbook()"> ' + svgIcon("folder", 14) + ' Divisions Logbook</button>';
       h +=
         '<button class="nav-btn ' +
         (currentLogbookView === "rd" ? "active" : "") +
-        '" onclick="openRDLogbook()">👔 RD Logbook</button>';
+        '" onclick="openRDLogbook()"> ' + svgIcon("user", 14) + ' RD Logbook</button>';
       h +=
         '<button class="nav-btn ' +
         (currentLogbookView === "ard" ? "active" : "") +
-        '" onclick="openARDLogbook()">👔 ARD Logbook</button>';
+        '" onclick="openARDLogbook()"> ' + svgIcon("user", 14) + ' ARD Logbook</button>';
     } else if (r === "rd") {
       h +=
         '<button class="nav-btn ' +
         ((currentLogbookView === "divisions" || currentLogbookView === "division") ? "active" : "") +
-        '" onclick="openDivisionsLogbook()">📁 Divisions Logbook</button>';
+        '" onclick="openDivisionsLogbook()"> ' + svgIcon("folder", 14) + ' Divisions Logbook</button>';
       h +=
         '<button class="nav-btn ' +
         (currentLogbookView === "admin" ? "active" : "") +
-        '" onclick="openAdminLogbook()">👑 Admin Logbook</button>';
+        '" onclick="openAdminLogbook()"> ' + svgIcon("user", 14) + ' Admin Logbook</button>';
       h +=
         '<button class="nav-btn ' +
         (currentLogbookView === "ard" ? "active" : "") +
-        '" onclick="openARDLogbook()">👔 ARD Logbook</button>';
+        '" onclick="openARDLogbook()"> ' + svgIcon("user", 14) + ' ARD Logbook</button>';
     } else {
       h +=
         '<button class="nav-btn ' +
         ((currentLogbookView === "divisions" || currentLogbookView === "division") ? "active" : "") +
-        '" onclick="openDivisionsLogbook()">📁 Divisions Logbook</button>';
+        '" onclick="openDivisionsLogbook()"> ' + svgIcon("folder", 14) + ' Divisions Logbook</button>';
       h +=
         '<button class="nav-btn ' +
         (currentLogbookView === "rd" ? "active" : "") +
-        '" onclick="openRDLogbook()">👔 RD Logbook</button>';
+        '" onclick="openRDLogbook()"> ' + svgIcon("user", 14) + ' RD Logbook</button>';
       h +=
         '<button class="nav-btn ' +
         (currentLogbookView === "admin" ? "active" : "") +
-        '" onclick="openAdminLogbook()">👑 Admin Logbook</button>';
+        '" onclick="openAdminLogbook()"> ' + svgIcon("user", 14) + ' Admin Logbook</button>';
     }
   } else if (r === "dc") {
     // Division Chief Navigation
     h +=
       '<button class="nav-btn ' +
       (currentLogbookView === "my" ? "active" : "") +
-      '" onclick="openMyLogbook()">📋 My Logbook</button>';
+      '" onclick="openMyLogbook()"> ' + svgIcon("clipboard", 14) + ' My Logbook</button>';
     h +=
       '<button class="nav-btn ' +
       (currentLogbookView === "staff" ? "active" : "") +
-      '" onclick="openLogbookView(\'staff\')">👥 Staff Logbook</button>';
+      '" onclick="openLogbookView(\'staff\')"> ' + svgIcon("users", 14) + ' Staff Logbook</button>';
     h +=
       '<button class="nav-btn ' +
       (currentLogbookView === "supervisor" ? "active" : "") +
-      '" onclick="openLogbookView(\'supervisor\')">👤 Supervisor Logbook</button>';
+      '" onclick="openLogbookView(\'supervisor\')"> ' + svgIcon("user", 14) + ' Supervisor Logbook</button>';
   } else {
     // Staff and Supervisor Navigation
     h +=
-      '<button class="nav-btn active" onclick="openMyLogbook()">📋 My Logbook</button>';
+      '<button class="nav-btn active" onclick="openMyLogbook()"> ' + svgIcon("clipboard", 14) + ' My Logbook</button>';
   }
 
   h += "</div>";
@@ -4012,7 +4587,7 @@ function openLogbookView(view) {
 function renderDivisionFolders() {
   var h = '<div class="logbook-section" style="margin-bottom:2rem;">';
   h +=
-    '<div class="section-header"><span class="section-icon">📁</span><span class="section-title">Division Document Logbooks</span></div>';
+    '<div class="section-header"><span class="section-icon">' + svgIcon("folder", 16) + '</span><span class="section-title">Division Document Logbooks</span></div>';
   h += '<div class="folder-grid">';
 
   DIVISIONS.forEach(function (division) {
@@ -4024,13 +4599,13 @@ function renderDivisionFolders() {
       '<div class="logbook-folder division-folder" onclick="openDivisionLogbook(\'' +
       division.name +
       "')\">";
-    h += '<div class="folder-icon">📁</div>';
+    h += '<div class="folder-icon">' + svgIcon("folder", 22) + '</div>';
     h += '<div class="folder-content">';
     h += '<div class="folder-name">' + division.shortName + "</div>";
     h += '<div class="folder-description">' + division.name + "</div>";
     h += '<div class="folder-count">' + docCount + " documents</div>";
     h += "</div>";
-    h += '<div class="folder-arrow">→</div>';
+    h += '<div class="folder-arrow">' + svgIcon("arrowright", 20) + '</div>';
     h += "</div>";
   });
 
@@ -4044,7 +4619,7 @@ function renderUserLogbookFolders() {
   var viewableUsers = getViewableUsers();
   var h = '<div class="logbook-section" style="margin-bottom:2rem;">';
   h +=
-    '<div class="section-header"><span class="section-icon">👥</span><span class="section-title">User Document Logbooks</span></div>';
+    '<div class="section-header"><span class="section-icon">' + svgIcon("folder", 16) + '</span><span class="section-title">User Document Logbooks</span></div>';
   h += '<div class="folder-grid">';
 
   viewableUsers.forEach(function (user) {
@@ -4057,13 +4632,13 @@ function renderUserLogbookFolders() {
       "', '" +
       user.name +
       "')\">";
-    h += '<div class="folder-icon">👤</div>';
+    h += '<div class="folder-icon">' + svgIcon("folder", 22) + '</div>';
     h += '<div class="folder-content">';
     h += '<div class="folder-name">' + user.name + "</div>";
     h += '<div class="folder-description">' + user.label + "</div>";
     h += '<div class="folder-count">' + docCount + " documents</div>";
     h += "</div>";
-    h += '<div class="folder-arrow">→</div>';
+    h += '<div class="folder-arrow">' + svgIcon("arrowright", 20) + '</div>';
     h += "</div>";
   });
 
@@ -4088,7 +4663,7 @@ function renderDivisionLogbook(divisionName) {
     " Document Logbook</div>";
   h += "</div>";
   h +=
-    '<div style="display:flex;gap:.5rem"><button class="btn-sm" onclick="openManualLogbook()">✍️ Manual Logbook</button><button class="btn-sm" onclick="window.print()">🖨️ Print</button><button class="btn-sm" onclick="exportLogbookCSV()">⬇️ Export CSV</button></div>';
+    '<div style="display:flex;gap:.5rem"><button class="btn-sm" onclick="openManualLogbook()"> ' + svgIcon("edit", 14) + ' Manual Logbook</button><button class="btn-sm" onclick="window.print()"> ' + svgIcon("print", 14) + ' Print</button><button class="btn-sm" onclick="exportLogbookCSV()"> ' + svgIcon("download", 14) + ' Export CSV</button></div>';
   h += "</div>";
 
   h += renderSimpleLogbookNavigation();
@@ -4101,10 +4676,10 @@ function renderDivisionLogbook(divisionName) {
     ".</div>";
 
   h +=
-    '<div class="card"><table class="doc-table"><thead><tr><th>#</th><th>Reference No.</th><th>Direction</th><th>Date Received</th><th>Type</th><th>From / Sender</th><th>Subject</th><th>Routed To</th><th>Status</th><th>Physical Copy</th><th>Actions</th></tr></thead><tbody>';
+    '<div class="card"><table class="doc-table"><thead><tr><th>#</th><th>Reference No.</th><th>Direction</th><th>Date Received</th><th>Type</th><th>From / Sender</th><th>Subject</th><th>Routed To</th><th>Status</th><th>Physical Copy</th><th>Rating</th><th>Actions</th></tr></thead><tbody>';
 
   if (divisionDocs.length === 0) {
-    h += emptyStateRow(11, "📋", "No logbook entries", "No documents found for this division.");
+    h += emptyStateRow(12, svgIcon("clipboard", 40), "No logbook entries", "No documents found for this division.");
   } else {
     divisionDocs.forEach(function (d, i) {
       h +=
@@ -4127,7 +4702,9 @@ function renderDivisionLogbook(divisionName) {
         "</td><td>" +
         statusPill(d.status) +
         '</td><td style="text-align:center">' +
-        (d.physicalCopy ? "✔️" : "—") +
+        (d.physicalCopy ? svgIcon("check", 12) : "—") +
+        "</td><td>" +
+        renderRatingCell(d) +
         "</td><td>" +
         renderActionsMenu(d.ref, "openLogbookEdit") +
         "</td></tr>";
@@ -4171,7 +4748,7 @@ function renderUserLogbook(userRole, userName) {
     "'s Document Logbook</div>";
   h += "</div>";
   h +=
-    '<div style="display:flex;gap:.5rem"><button class="btn-sm" onclick="openManualLogbook()">✍️ Manual Logbook</button><button class="btn-sm" onclick="window.print()">🖨️ Print</button><button class="btn-sm" onclick="exportLogbookCSV()">⬇️ Export CSV</button></div>';
+    '<div style="display:flex;gap:.5rem"><button class="btn-sm" onclick="openManualLogbook()"> ' + svgIcon("edit", 14) + ' Manual Logbook</button><button class="btn-sm" onclick="window.print()"> ' + svgIcon("print", 14) + ' Print</button><button class="btn-sm" onclick="exportLogbookCSV()"> ' + svgIcon("download", 14) + ' Export CSV</button></div>';
   h += "</div>";
 
   h += renderSimpleLogbookNavigation();
@@ -4184,10 +4761,10 @@ function renderUserLogbook(userRole, userName) {
     "'s logbook.</div>";
 
   h +=
-    '<div class="card"><table class="doc-table"><thead><tr><th>#</th><th>Reference No.</th><th>Direction</th><th>Date Received</th><th>Type</th><th>From / Sender</th><th>Subject</th><th>Routed To</th><th>Status</th><th>Physical Copy</th><th>Actions</th></tr></thead><tbody>';
+    '<div class="card"><table class="doc-table"><thead><tr><th>#</th><th>Reference No.</th><th>Direction</th><th>Date Received</th><th>Type</th><th>From / Sender</th><th>Subject</th><th>Routed To</th><th>Status</th><th>Physical Copy</th><th>Rating</th><th>Actions</th></tr></thead><tbody>';
 
   if (userDocs.length === 0) {
-    h += emptyStateRow(11, "📋", "No logbook entries", "No documents found in this user's logbook.");
+    h += emptyStateRow(12, svgIcon("clipboard", 40), "No logbook entries", "No documents found in this user's logbook.");
   } else {
     userDocs.forEach(function (d, i) {
       h +=
@@ -4210,7 +4787,9 @@ function renderUserLogbook(userRole, userName) {
         "</td><td>" +
         statusPill(d.status) +
         '</td><td style="text-align:center">' +
-        (d.physicalCopy ? "✔️" : "—") +
+        (d.physicalCopy ? svgIcon("check", 12) : "—") +
+        "</td><td>" +
+        renderRatingCell(d) +
         "</td><td>" +
         renderActionsMenu(d.ref, "openLogbookEdit") +
         "</td></tr>";
@@ -4347,7 +4926,7 @@ function renderUsers() {
   });
 
   if (visibleUsers.length === 0) {
-    h += emptyStateRow(8, "👥", "No users found", "Users in your division will appear here.");
+    h += emptyStateRow(8, svgIcon("users", 40), "No users found", "Users in your division will appear here.");
   }
 
   visibleUsers.forEach(function (u) {
@@ -4421,9 +5000,7 @@ var USER_ACCOUNTS = [
       "dashboard",
       "incoming",
       "outgoing",
-      "pending-docs",
-      "pending-docs",
-      "approved",
+      "active-docs",
       "logbook",
       "search",
       "archive",
@@ -4443,12 +5020,12 @@ var USER_ACCOUNTS = [
     status: "Active",
     tempPassword: "password",
     docAccess: "Full",
-    funcAccess: "Approval",
+    funcAccess: "Full",
     features: [
       "dashboard",
       "incoming",
       "outgoing",
-      "pending-docs","approved",
+      "active-docs",
       "logbook",
       "search",
       "archive",
@@ -4467,12 +5044,12 @@ var USER_ACCOUNTS = [
     status: "Active",
     tempPassword: "password",
     docAccess: "Full",
-    funcAccess: "Clearance",
+    funcAccess: "Full",
     features: [
       "dashboard",
       "incoming",
       "outgoing",
-      "pending-docs","approved",
+      "active-docs",
       "logbook",
       "search",
       "archive",
@@ -4498,7 +5075,7 @@ var USER_ACCOUNTS = [
       "dashboard",
       "incoming",
       "outgoing",
-      "pending-docs","logbook",
+      "active-docs","logbook",
       "search",
       "users",
       "notifications",
@@ -4520,7 +5097,7 @@ var USER_ACCOUNTS = [
       "dashboard",
       "incoming",
       "outgoing",
-      "pending-docs","logbook",
+      "active-docs","logbook",
       "search",
       "archive",
       "users",
@@ -4543,7 +5120,7 @@ var USER_ACCOUNTS = [
       "dashboard",
       "incoming",
       "outgoing",
-      "pending-docs","logbook",
+      "active-docs","logbook",
       "search",
       "notifications",
       "announcements",
@@ -4564,7 +5141,7 @@ var USER_ACCOUNTS = [
       "dashboard",
       "incoming",
       "outgoing",
-      "pending-docs","logbook",
+      "active-docs","logbook",
       "notifications",
       "announcements",
       "enhanced-reports",
@@ -4579,7 +5156,7 @@ function getFeaturesForRole(role) {
       "dashboard",
       "incoming",
       "outgoing",
-      "pending-docs","logbook",
+      "active-docs","logbook",
       "search",
       "archive",
       "users",
@@ -4597,7 +5174,7 @@ function getFeaturesForRole(role) {
       "dashboard",
       "incoming",
       "outgoing",
-      "pending-docs","logbook",
+      "active-docs","logbook",
       "search",
       "users",
       "notifications",
@@ -4609,7 +5186,7 @@ function getFeaturesForRole(role) {
       "dashboard",
       "incoming",
       "outgoing",
-      "pending-docs","logbook",
+      "active-docs","logbook",
       "search",
       "archive",
       "users",
@@ -4621,7 +5198,7 @@ function getFeaturesForRole(role) {
     "dashboard",
     "incoming",
     "outgoing",
-      "pending-docs","logbook",
+      "active-docs","logbook",
     "search",
     "notifications",
     "announcements",
@@ -5044,7 +5621,7 @@ function getDocAccessForRole(role) {
 function getFuncAccessForRole(role) {
   var accessMap = {
     admin: "Full",
-    rd: "Approval",
+    rd: "Full",
     ard: "Division Manager",
     oic: "Division Manager",
     dc: "Division Manager",
@@ -5098,8 +5675,7 @@ function renderUserManagementModals() {
       { id: "dashboard", label: "Dashboard" },
       { id: "incoming", label: "Incoming Documents" },
       { id: "outgoing", label: "Outgoing Documents" },
-      { id: "pending-docs", label: "Pending Documents" },
-      { id: "approved", label: "Approved Documents" },
+      { id: "active-docs", label: "Active Documents" },
       { id: "logbook", label: "Document Logbook" },
       { id: "search", label: "Document Search" },
       { id: "archive", label: "Archive" },
@@ -5139,7 +5715,7 @@ function renderUserManagementModals() {
       oicSection =
         '<div style="background: #fff8e1; border: 1px solid #ffe082; border-radius: 12px; padding: 1.25rem; margin-bottom: 1.5rem;">' +
         '<label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; color: #b78103; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem;">' +
-        '<span style="font-size: 14px;">👑</span> Officer-in-Charge (OIC) Authority Designation</label>' +
+        '<span style="font-size: 14px;">' + svgIcon("user", 14) + '</span> Officer-in-Charge (OIC) Authority Designation</label>' +
         '<div style="display: flex; gap: 1rem; align-items: center;">' +
         '<select id="um-oic-approved" style="flex: 1; padding: 0.75rem; border: 1px solid #ffe082; border-radius: 8px; font-size: 14px; background: #fff; color: #475569; cursor: pointer;">' +
         optionsHtml +
@@ -5147,7 +5723,7 @@ function renderUserManagementModals() {
         '</div>' +
         (user.oicRequest
           ? '<div style="margin-top: 0.75rem; font-size: 12px; color: #b78103; font-weight: 600; display: flex; align-items: center; gap: 0.35rem;">' +
-          '<span>⚠️</span> Pending request to assume OIC ' + (user.oicRequest === "rd" ? "Regional Director" : "Assistant Regional Director") + ' duties.' +
+          '<span>' + svgIcon("alert", 14) + '</span> Pending request to assume OIC ' + (user.oicRequest === "rd" ? "Regional Director" : "Assistant Regional Director") + ' duties.' +
           '</div>'
           : '') +
         '</div>';
@@ -5167,7 +5743,7 @@ function renderUserManagementModals() {
       '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem;">' +
       '<div style="background: #f8fafc; padding: 1.25rem; border-radius: 12px; border: 1px solid #e2e8f0;">' +
       '<label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; color: var(--navy); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem;">' +
-      '<span style="font-size: 14px;">📄</span> Document Access</label>' +
+      '<span style="font-size: 14px;">' + svgIcon("filetext", 14) + '</span> Document Access</label>' +
       '<select id="um-doc-access" style="width: 100%; padding: 0.75rem; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; background: #fff; color: var(--text); cursor: pointer; transition: border-color 0.2s;">' +
       "<option" +
       (user.docAccess === "Full" ? " selected" : "") +
@@ -5182,7 +5758,7 @@ function renderUserManagementModals() {
       "</div>" +
       '<div style="background: #f8fafc; padding: 1.25rem; border-radius: 12px; border: 1px solid #e2e8f0;">' +
       '<label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; color: var(--navy); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem;">' +
-      '<span style="font-size: 14px;">⚙️</span> Function Access</label>' +
+      '<span style="font-size:14px">' + svgIcon("key", 14) + '</span> Function Access</label>'
       '<select id="um-func-access" style="width: 100%; padding: 0.75rem; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; background: #fff; color: var(--text); cursor: pointer; transition: border-color 0.2s;">' +
       "<option" +
       (user.funcAccess === "Full" ? " selected" : "") +
@@ -5210,7 +5786,7 @@ function renderUserManagementModals() {
       "</div>" +
       "</div>" +
       '<div style="margin-top: 2rem; padding: 1rem; background: #eff6ff; border-radius: 10px; border: 1px solid #bfdbfe; display: flex; gap: 0.75rem; align-items: flex-start;">' +
-      '<span style="font-size: 18px; margin-top: -2px;">ℹ️</span>' +
+      '<span style="font-size: 18px; margin-top: -2px;">' + svgIcon("info", 18) + '</span>' +
       '<p style="margin: 0; font-size: 12px; color: #1e40af; line-height: 1.6;">' +
       "<strong>Administrative Note:</strong> Customizing feature access will override the system's default role-based navigation for this user. These changes will be applied instantly upon saving." +
       "</p>" +
@@ -5405,7 +5981,7 @@ function saveAccountSettings() {
     var newPass = (newPassEl && newPassEl.value ? newPassEl.value : "").trim();
     if (!newPass) {
       if (noticeEl) {
-        noticeEl.textContent = "⚠️ Please enter a new password (or choose passwordless login).";
+        noticeEl.textContent = "Please enter a new password (or choose passwordless login).";
         noticeEl.style.display = "block";
       }
       return;
@@ -5506,8 +6082,8 @@ function renderSearch() {
   }).join("");
 
   var statusOptions = [
-    "All statuses", "New", "Pending", "In Review", "Routed", "Received",
-    "For ARD Clearance", "For RD Approval", "Approved", "Released",
+    "All statuses", "Sent", "Acknowledged", "In Progress",
+    "Needs Clarification", "On Hold", "Done",
     "Archived", "For Disposal Review", "Disposed",
   ].map(function (s) {
     return '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>';
@@ -5549,8 +6125,8 @@ function renderSearch() {
   h += '<option value="">All directions</option><option value="incoming">Incoming</option><option value="outgoing">Outgoing</option>';
   h += '</select></div>';
   h += '<div style="display:flex;align-items:flex-end;gap:.5rem">';
-  h += '<button class="btn-sm primary" onclick="executeSearch()" style="padding:.5rem 1.25rem;height:34px">🔍 Search</button>';
-  h += '<button class="btn-sm" onclick="clearSearch()" style="padding:.5rem 1rem;height:34px">✕ Clear</button>';
+  h += '<button class="btn-sm primary" onclick="executeSearch()" style="padding:.5rem 1.25rem;height:34px">' + svgIcon("search", 14) + ' Search</button>';
+  h += '<button class="btn-sm" onclick="clearSearch()" style="padding:.5rem 1rem;height:34px"> ' + svgIcon("x", 14) + ' Clear</button>';
   h += '</div></div></div>';
 
   // ── Results ────────────────────────────────────────────────────────────────
@@ -5561,7 +6137,7 @@ function renderSearch() {
   h += '</div>';
   h += '<div class="doc-table-wrap">';
   h += '<table class="doc-table"><thead><tr>';
-  h += '<th>Reference No.</th><th>Subject</th><th>Type</th><th>Category</th><th>Division</th><th>Status</th><th>Ver.</th><th>Date</th><th>Actions</th>';
+  h += '<th>Reference No.</th><th>Subject</th><th>Type</th><th>Category</th><th>Division</th><th>Status</th><th>Ver.</th><th>Date</th><th>Rating</th><th>Actions</th>';
   h += '</tr></thead>';
   h += '<tbody id="search-results-tbody">';
   h += buildSearchRows(visibleDocs);
@@ -5572,8 +6148,8 @@ function renderSearch() {
 
 function buildSearchRows(docs) {
   if (docs.length === 0) {
-    return '<tr><td colspan="9" style="text-align:center;padding:3rem;color:var(--muted);">' +
-      '<div style="font-size:2rem;margin-bottom:.5rem">🔍</div>' +
+    return '<tr><td colspan="10" style="text-align:center;padding:3rem;color:var(--muted);">' +
+      '<div style="font-size:2rem;margin-bottom:.5rem">' + svgIcon("search", 32) + '</div>' +
       '<div style="font-weight:600;margin-bottom:.25rem">No documents found</div>' +
       '<div style="font-size:12px">Try adjusting your search filters</div>' +
       '</td></tr>';
@@ -5594,6 +6170,7 @@ function buildSearchRows(docs) {
       '<td>' + statusPill(d.status || "") + '</td>' +
       '<td style="font-weight:700;color:var(--navy3);font-size:12px">' + ver + '</td>' +
       '<td style="white-space:nowrap">' + escapeHtml(d.date || "—") + '</td>' +
+      '<td>' + renderRatingCell(d) + '</td>' +
       '<td>' + renderRepositoryActionsMenu(d.ref) + '</td>' +
       '</tr>';
   }).join("");
@@ -5739,12 +6316,12 @@ function executeArchiveSearch() {
       
       if (results.length === 0) {
         h += '<div style="padding:2rem;text-align:center;color:var(--muted)">';
-        h += '<div style="font-size:32px;margin-bottom:1rem">📭</div>';
+        h += '<div style="font-size:32px;margin-bottom:1rem">' + svgIcon("inbox", 32) + '</div>';
         h += '<div>No archived documents match your search criteria.</div>';
         h += '</div>';
       } else {
         h += '<div class="doc-table-wrap"><table class="doc-table">';
-        h += '<thead><tr><th>Reference</th><th>Subject</th><th>Type</th><th>Category</th><th>Division</th><th>Archive Date</th><th>Actions</th></tr></thead>';
+        h += '<thead><tr><th>Reference</th><th>Subject</th><th>Type</th><th>Category</th><th>Division</th><th>Archive Date</th><th>Rating</th><th>Actions</th></tr></thead>';
         h += '<tbody>';
         results.forEach(function (d) {
           h += '<tr>';
@@ -5754,6 +6331,7 @@ function executeArchiveSearch() {
           h += '<td>' + escapeHtml(d.category || "—") + '</td>';
           h += '<td>' + escapeHtml(getDivisionAbbrev(d.division) || "—") + '</td>';
           h += '<td>' + escapeHtml(d.date || "—") + '</td>';
+          h += '<td>' + renderRatingCell(d) + '</td>';
           h += '<td>' + renderArchiveActionsMenu(d.ref, "search") + '</td>';
           h += '</tr>';
         });
@@ -5783,16 +6361,16 @@ function clearArchiveSearch() {
 function renderReports() {
   var h = '<div class="section-title">Reports & Analytics</div>';
   h += '<div class="stats-row mb15">';
-  h += statCard("📥", "Total Incoming", "142", "This year", "var(--info)");
-  h += statCard("📤", "Total Outgoing", "89", "This year", "var(--success)");
+  h += statCard(svgIcon("inbox", 20), "Total Incoming", "142", "This year", "var(--navy)");
+  h += statCard(svgIcon("send", 20), "Total Outgoing", "89", "This year", "var(--navy2)");
   h += statCard(
-    "⏳",
+    svgIcon("clock", 20),
     "Avg. Processing",
     "2.4 days",
     "Per document",
-    "var(--warn)",
+    "var(--gold)",
   );
-  h += statCard("🗃️", "Archived", "401", "All time", "var(--muted)");
+  h += statCard(svgIcon("archive", 20), "Archived", "401", "All time", "var(--muted)");
   h += "</div>";
   h +=
     '<div class="grid2"><div class="card"><div class="card-head"><div class="card-title">Documents by Type</div></div>';
@@ -5838,13 +6416,13 @@ function renderReports() {
   });
   h += "</div></div>";
   h +=
-    '<div style="margin-top:1.25rem;display:flex;gap:.5rem"><button class="btn-sm">🖨️ Print Report</button><button class="btn-sm">⬇️ Export PDF</button><button class="btn-sm">⬇️ Export Excel</button></div>';
+    '<div style="margin-top:1.25rem;display:flex;gap:.5rem"><button class="btn-sm"> ' + svgIcon("print", 14) + ' Print Report</button><button class="btn-sm"> ' + svgIcon("filetext", 14) + ' Export PDF</button><button class="btn-sm"> ' + svgIcon("grid", 14) + ' Export Excel</button></div>';
   return h;
 }
 
 function renderArchiveActionsMenu(ref, mode) {
-  // mode: "archived" | "released"
-  var allowArchive = mode === "released";
+  // mode: "archived" | "ready"
+  var allowArchive = mode === "ready";
   var options = '<option value="" disabled selected hidden>Options</option>';
   options += '<option value="view">View</option>';
   options += '<option value="print">Print</option>';
@@ -6064,30 +6642,30 @@ function unarchiveDocument(ref) {
   }
   showConfirmDialog({
     variant: "neutral",
-    title: "Restore to released?",
+    title: "Restore document?",
     message:
       "Reference " +
       ref +
-      " will return to the active released list and leave the archive.",
+      " will return to the active list and leave the archive.",
     confirmLabel: "Restore document",
     cancelLabel: "Cancel",
   }).then(function (ok) {
     if (!ok) return;
-    d.status = "Released";
+    d.status = "Done";
     delete d.archivedBy;
     delete d.archivedDate;
 
     ensureTrail(d);
     d.tracking.trail.push({
       user: currentUser.name,
-      action: "Released",
+      action: "Unarchived",
       timestamp: new Date().toISOString(),
     });
     d.tracking.lastUpdated = new Date().toISOString();
     d.tracking.lastActor = currentUser.role;
     d.tracking.updatedBy = currentUser.name;
 
-    showSuccess("Document " + ref + " restored to Released.");
+    showSuccess("Document " + ref + " restored to the active list.");
     showPage("archive");
   });
 }
@@ -6188,7 +6766,7 @@ function renderArchive() {
   // ── Archive Search Banner ──────────────────────────────────────────────────
   var types = ["Memorandum", "Letter", "Report", "Contract", "Resolution", "Ordinance", "Executive Order", "Policy", "Notice", "Endorsement"];
   var categories = ["Administrative", "Financial", "HR/Personnel", "Legal", "Operations", "Technical"];
-  var statuses = ["Archived", "Released"];
+  var statuses = ["Archived", "Disposed"];
   var divisions = ["Office of the Regional Director", "Administrative and Finance Division", "Technical Services Division", "Planning and Management Division"];
 
   var typeOptions = '<option value="">All Types</option>' + types.map(function (t) {
@@ -6234,8 +6812,8 @@ function renderArchive() {
   h += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem">Date Range</label>';
   h += '<input type="date" id="archive-search-date" ' + inputStyle + ' onchange="executeArchiveSearch()" /></div>';
   h += '<div style="display:flex;align-items:flex-end;gap:.5rem">';
-  h += '<button class="btn-sm primary" onclick="executeArchiveSearch()" style="padding:.5rem 1.25rem;height:34px">🔍 Search</button>';
-  h += '<button class="btn-sm" onclick="clearArchiveSearch()" style="padding:.5rem 1rem;height:34px">✕ Clear</button>';
+  h += '<button class="btn-sm primary" onclick="executeArchiveSearch()" style="padding:.5rem 1.25rem;height:34px">' + svgIcon("search", 14) + ' Search</button>';
+  h += '<button class="btn-sm" onclick="clearArchiveSearch()" style="padding:.5rem 1rem;height:34px"> ' + svgIcon("x", 14) + ' Clear</button>';
   h += '</div></div>';
   h += '<div id="archive-search-results-count" style="font-size:12px;color:var(--muted);margin-top:0.75rem"></div>';
   h += '</div>';
@@ -6270,17 +6848,17 @@ function renderArchive() {
         folder.id +
         "', '" +
         folder.name +
-        "')\">✏️</button>";
+        "')\">" + svgIcon("edit", 14) + "</button>";
       h +=
         '<button class="archive-folder-btn danger" title="Delete" onclick="event.stopPropagation(); deleteArchiveFolder(\'' +
         folder.id +
-        "')\">🗑️</button>";
+        "')\">" + svgIcon("trash", 14) + "</button>";
       h += "</div>";
     }
 
     // Main Content
     h += '<div class="archive-folder-main">';
-    h += '<div class="archive-folder-icon">📁</div>';
+    h += '<div class="archive-folder-icon">' + svgIcon("folder", 22) + '</div>';
     h += '<div class="archive-folder-info">';
     h +=
       '<div class="archive-folder-name">' + escapeHtml(folder.name) + "</div>";
@@ -6299,31 +6877,31 @@ function renderArchive() {
 
   h += "</div></div>";
 
-  // Ready to Archive section
-  var released = DOCS.filter(function (d) {
-    if (d.status !== "Released") return false;
+  // Ready to Archive section (completed records with status Done)
+  var readyToArchive = DOCS.filter(function (d) {
+    if (d.status !== "Done") return false;
     if (isGlobalLogbookRole(currentUser.role)) return true;
     return (d.division || "ORD") === currentUser.division;
   });
 
   h += '<div class="archive-table-header">';
-  h += '<div class="archive-table-title">📂 Ready to Archive</div>';
+  h += '<div class="archive-table-title"> ' + svgIcon("folder", 15) + ' Ready to Archive</div>';
   h +=
     '<div style="font-size:12px;color:var(--muted)">' +
-    released.length +
+    readyToArchive.length +
     " documents found</div>";
   h += "</div>";
 
   h += '<div class="card">';
-  if (released.length === 0) {
+  if (readyToArchive.length === 0) {
     h += '<div style="padding:3rem;text-align:center;color:var(--muted)">';
-    h += '<div style="font-size:32px;margin-bottom:1rem">✨</div>';
+    h += '<div style="font-size:32px;margin-bottom:1rem">' + svgIcon("archive", 32) + '</div>';
     h += "<div>No documents are currently ready for archiving.</div>";
     h += "</div>";
   } else {
     h +=
-      '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference</th><th>Subject</th><th>Release Date</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
-    released.forEach(function (d) {
+      '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference</th><th>Subject</th><th>Date</th><th>Status</th><th>Rating</th><th>Actions</th></tr></thead><tbody>';
+    readyToArchive.forEach(function (d) {
       h +=
         '<tr><td style="font-family:monospace;font-weight:600">' +
         d.ref +
@@ -6333,8 +6911,9 @@ function renderArchive() {
         d.date +
         "</td><td>" +
         statusPill(d.status) +
-        '<td style="text-align:right">' +
-        renderArchiveActionsMenu(d.ref, "released") +
+        '</td><td>' + renderRatingCell(d) +
+        '</td><td style="text-align:right">' +
+        renderArchiveActionsMenu(d.ref, "ready") +
         "</td></tr>";
     });
     h += "</tbody></table></div>";
@@ -6368,12 +6947,12 @@ function renderArchiveFolderContents(folderId) {
   var h = "";
   h += '<div style="margin-bottom: 1.5rem;">';
   h +=
-    '<button class="btn-sm" onclick="closeArchiveFolder()">← Back to Archive</button>';
+    '<button class="btn-sm" onclick="closeArchiveFolder()">' + svgIcon("arrowleft", 14) + ' Back to Archive</button>';
   h += "</div>";
 
   h += '<div class="card">';
   h += '<div class="card-head">';
-  h += '<div class="card-title">📁 ' + escapeHtml(folder.name) + "</div>";
+  h += '<div class="card-title">' + svgIcon("folder", 16) + ' ' + escapeHtml(folder.name) + "</div>";
   h +=
     '<div style="font-size:12px;color:var(--muted)">' +
     docsInFolder.length +
@@ -6382,12 +6961,12 @@ function renderArchiveFolderContents(folderId) {
 
   if (docsInFolder.length === 0) {
     h += '<div style="padding:4rem;text-align:center;color:var(--muted)">';
-    h += '<div style="font-size:48px;margin-bottom:1rem;opacity:0.2">📁</div>';
+    h += '<div style="font-size:48px;margin-bottom:1rem;opacity:0.2">' + svgIcon("folder", 48) + '</div>';
     h += "<div>This folder is empty.</div>";
     h += "</div>";
   } else {
     h +=
-      '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference</th><th>Subject</th><th>Archived Date</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
+      '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference</th><th>Subject</th><th>Archived Date</th><th>Status</th><th>Rating</th><th>Actions</th></tr></thead><tbody>';
     docsInFolder.forEach(function (d) {
       h +=
         '<tr><td style="font-family:monospace;font-weight:600">' +
@@ -6398,7 +6977,8 @@ function renderArchiveFolderContents(folderId) {
         (d.archivedDate || d.date) +
         "</td><td>" +
         statusPill(d.status) +
-        '<td style="text-align:right">' +
+        '</td><td>' + renderRatingCell(d) +
+        '</td><td style="text-align:right">' +
         renderArchiveActionsMenu(d.ref, "archived") +
         "</td></tr>";
     });
@@ -6418,13 +6998,12 @@ function getPageDisplayName(page) {
     dashboard: "Dashboard",
     incoming: "Incoming Documents",
     outgoing: "Outgoing Documents",
-    "pending-docs": "Pending Documents",
+    "active-docs": "Active Documents",
     logbook: "Document Logbook",
     search: "Documents",
     archive: "Archive",
     disposal: "Disposal Management",
     users: "User Management",
-    approved: "Approved Documents",
     announcements: "Bulletin Board",
     notifications: "Notifications",
     "enhanced-reports": "Reports",
@@ -6470,9 +7049,140 @@ function viewDoc(ref) {
 
   var c = document.getElementById("main-content");
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // EMAIL PREVIEW (for Email Communication documents)
+  // ══════════════════════════════════════════════════════════════════════════
+  if (d.isEmail && d.emailContent) {
+    var html = '<div style="background:#e8eaed;min-height:100vh;margin:-1.5rem;padding:1rem">';
+    html += '<button class="btn-sm" onclick="goBackFromDocView()" style="margin-bottom:1rem;background:white">' + svgIcon("arrowleft", 14) + ' Back to ' + getPageDisplayName(previousPage) + '</button>';
+    
+    html += '<div style="max-width:900px;margin:0 auto;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.12);border-radius:8px;overflow:hidden">';
+    
+    // Email header
+    html += '<div style="background:linear-gradient(135deg, var(--navy) 0%, var(--navy3) 100%);padding:1.5rem 2rem;color:white">';
+    html += '<div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem">';
+    html += '<div style="font-size:32px">' + svgIcon("mail", 32) + '</div>';
+    html += '<div>';
+    html += '<div style="font-size:11px;opacity:0.8;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:0.25rem">Email Communication</div>';
+    html += '<div style="font-size:20px;font-weight:700">' + escapeHtml(d.emailContent.subject || d.subject || 'Untitled') + '</div>';
+    html += '</div>';
+    html += '</div>';
+    html += '<div style="font-size:12px;opacity:0.9">Reference: <strong>' + escapeHtml(d.ref) + '</strong></div>';
+    html += '</div>';
+    
+    // Email metadata
+    html += '<div style="padding:1.5rem 2rem;border-bottom:1px solid #e0e0e0;background:#f9fafb">';
+    if (d.emailContent.from) {
+      html += '<div style="margin-bottom:0.75rem">';
+      html += '<span style="display:inline-block;width:80px;font-weight:600;color:var(--navy)">From:</span>';
+      html += '<span>' + escapeHtml(d.emailContent.from) + '</span>';
+      html += '</div>';
+    }
+    if (d.emailContent.to) {
+      html += '<div style="margin-bottom:0.75rem">';
+      html += '<span style="display:inline-block;width:80px;font-weight:600;color:var(--navy)">To:</span>';
+      html += '<span>' + escapeHtml(d.emailContent.to) + '</span>';
+      html += '</div>';
+    }
+    if (d.emailContent.cc) {
+      html += '<div style="margin-bottom:0.75rem">';
+      html += '<span style="display:inline-block;width:80px;font-weight:600;color:var(--navy)">CC:</span>';
+      html += '<span>' + escapeHtml(d.emailContent.cc) + '</span>';
+      html += '</div>';
+    }
+    if (d.emailContent.date || d.date) {
+      html += '<div style="margin-bottom:0.75rem">';
+      html += '<span style="display:inline-block;width:80px;font-weight:600;color:var(--navy)">Date:</span>';
+      html += '<span>' + escapeHtml(d.emailContent.date || d.date) + '</span>';
+      html += '</div>';
+    }
+    html += '<div style="margin-bottom:0.75rem">';
+    html += '<span style="display:inline-block;width:80px;font-weight:600;color:var(--navy)">Category:</span>';
+    html += '<span>' + escapeHtml(d.category || 'General') + '</span>';
+    html += '</div>';
+    html += '<div>';
+    html += '<span style="display:inline-block;width:80px;font-weight:600;color:var(--navy)">Status:</span>';
+    html += statusPill(d.status || 'New');
+    html += '</div>';
+    html += '</div>';
+    
+    // Email body
+    html += '<div style="padding:2rem;min-height:400px">';
+    html += '<div style="border-left:3px solid #e0e0e0;padding-left:1.5rem;font-size:14px;line-height:1.8;color:#202124;white-space:pre-wrap;font-family:\'Segoe UI\',sans-serif">';
+    html += escapeHtml(d.emailContent.body || 'No content');
+    html += '</div>';
+    html += '</div>';
+    
+    // Document quality rating (role-scoped) — email preview
+    var emailRatingHtml = renderDocRatingControl(d);
+    if (emailRatingHtml) {
+      html += '<div style="padding:0 2rem 1.5rem">' + emailRatingHtml + '</div>';
+    }
+
+    // Email footer with actions
+    html += '<div style="padding:1.5rem 2rem;background:#f9fafb;border-top:1px solid #e0e0e0">';
+    html += '<div style="display:flex;gap:0.5rem;justify-content:flex-end">';
+    html += '<button class="btn-sm" onclick="openQuickSend(\'' + escapeHtml(d.ref) + '\')">Send Document</button>';
+    html += '<button class="btn-sec" onclick="goBackFromDocView()">Close</button>';
+    html += '</div>';
+    html += '</div>';
+    
+    html += '</div>'; // end email container
+    html += '</div>'; // end background
+    
+    c.innerHTML = html;
+    return; // Exit function - email preview complete
+  }
+
   // ── Local Document Preview Interface (NO EXTERNAL VIEWERS) ────────────────
   var html = '<div style="background:#e8eaed;min-height:100vh;margin:-1.5rem;padding:1rem">';
-  html += '<button class="btn-sm" onclick="goBackFromDocView()" style="margin-bottom:1rem;background:white">← Back to ' + getPageDisplayName(previousPage) + '</button>';
+  html += '<button class="btn-sm" onclick="goBackFromDocView()" style="margin-bottom:1rem;background:white">' + svgIcon("arrowleft", 14) + ' Back to ' + getPageDisplayName(previousPage) + '</button>';
+  
+  // Document header with metadata
+  var directionBadge = d.direction === "incoming" 
+    ? '<span class="direction-badge direction-incoming">INCOMING</span>'
+    : d.direction === "outgoing"
+    ? '<span class="direction-badge direction-outgoing">OUTGOING</span>'
+    : '';
+  
+  var priorityBadge = d.priority && d.priority !== "Normal"
+    ? '<span class="pill pill-' + (d.priority === "Urgent" || d.priority === "High" ? "red" : "amber") + '" style="margin-left:8px">' + d.priority + '</span>'
+    : '';
+  
+  html += '<div style="max-width:1200px;margin:0 auto 1rem;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.12);border-radius:8px;padding:1.5rem">';
+  html += '<div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:1rem">';
+  html += '<div style="flex:1;min-width:300px">';
+  html += '<div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem">';
+  html += '<span style="font-family:monospace;font-size:13px;color:var(--muted)">' + escapeHtml(d.ref) + '</span>';
+  html += directionBadge;
+  html += priorityBadge;
+  html += '</div>';
+  html += '<h2 style="margin:0 0 0.75rem;font-size:22px;color:var(--navy);font-weight:600">' + escapeHtml(d.subject) + '</h2>';
+  html += '<div style="display:flex;flex-wrap:wrap;gap:1.5rem;font-size:13px;color:var(--muted)">';
+  if (d.type) html += '<span>' + svgIcon("filetext", 14) + ' ' + escapeHtml(d.type) + '</span>';
+  if (d.from) html += '<span>' + svgIcon("user", 14) + ' From: ' + escapeHtml(d.from) + '</span>';
+  if (d.to) html += '<span>' + svgIcon("send", 14) + ' To: ' + escapeHtml(d.to) + '</span>';
+  if (d.date) html += '<span>' + svgIcon("calendar", 14) + ' ' + escapeHtml(d.date) + '</span>';
+  html += '</div>';
+  html += '</div>';
+  html += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.5rem">';
+  html += '<div style="font-size:13px;color:var(--muted)">Current Status</div>';
+  html += renderStatusDropdown(d.ref, d.status, isCurrentUserRecipient(d));
+  html += '</div>';
+  html += '</div>';
+  
+  // Instruction display if present
+  if (d.instruction) {
+    html += '<div style="margin-top:1.25rem;padding:1rem;background:#f8fafc;border-left:3px solid var(--navy);border-radius:0 8px 8px 0">';
+    html += '<div style="font-size:11px;font-weight:600;color:var(--navy);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem">Instruction from Sender</div>';
+    html += '<div style="font-size:14px;color:var(--text);line-height:1.6">' + escapeHtml(d.instruction) + '</div>';
+    html += '</div>';
+  }
+
+  // Document quality rating (role-scoped 5-star control or read-only display)
+  html += renderDocRatingControl(d);
+  
+  html += '</div>';
   
   // Check if document has attachments to preview
   if (d.attachments && d.attachments.length > 0) {
@@ -6489,7 +7199,7 @@ function viewDoc(ref) {
       // PDF - Will render with PDF.js
       html += '<div id="pdf-container-' + viewerId + '" style="width:100%;min-height:800px;background:#525659;overflow:auto;padding:1rem"></div>';
       html += '<div id="pdf-loading-' + viewerId + '" style="padding:4rem;text-align:center;color:#5f6368">';
-      html += '<div style="font-size:48px;margin-bottom:1rem">📄</div>';
+      html += '<div style="font-size:48px;margin-bottom:1rem">' + svgIcon("filetext", 48) + '</div>';
       html += '<div>Loading PDF document...</div>';
       html += '</div>';
       
@@ -6497,7 +7207,7 @@ function viewDoc(ref) {
       // DOCX - Will render with Mammoth.js
       html += '<div id="docx-container-' + viewerId + '" style="width:100%;min-height:800px;padding:3rem;overflow:auto;background:white"></div>';
       html += '<div id="docx-loading-' + viewerId + '" style="padding:4rem;text-align:center;color:#5f6368">';
-      html += '<div style="font-size:48px;margin-bottom:1rem">📄</div>';
+      html += '<div style="font-size:48px;margin-bottom:1rem">' + svgIcon("filetext", 48) + '</div>';
       html += '<div>Loading Word document...</div>';
       html += '</div>';
       
@@ -6515,7 +7225,7 @@ function viewDoc(ref) {
     } else {
       // Unsupported file type
       html += '<div style="padding:4rem;text-align:center">';
-      html += '<div style="font-size:64px;margin-bottom:1.5rem;color:#5f6368">📄</div>';
+      html += '<div style="font-size:64px;margin-bottom:1.5rem;color:#5f6368">' + svgIcon("filetext", 64) + '</div>';
       html += '<div style="font-size:18px;font-weight:500;color:#202124;margin-bottom:1rem">' + escapeHtml(fileName) + '</div>';
       html += '<div style="font-size:14px;color:#5f6368">Preview is not available for this file type.</div>';
       html += '</div>';
@@ -6526,9 +7236,61 @@ function viewDoc(ref) {
   } else {
     // No attachments
     html += '<div style="max-width:1200px;margin:0 auto;padding:4rem;text-align:center;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.12);border-radius:8px;min-height:400px">';
-    html += '<div style="font-size:72px;margin-bottom:1rem;opacity:0.3;color:#5f6368">📄</div>';
+    html += '<div style="font-size:72px;margin-bottom:1rem;opacity:0.3;color:#5f6368">' + svgIcon("filetext", 72) + '</div>';
     html += '<div style="font-size:16px;color:#5f6368">No document file attached</div>';
     html += '</div>';
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DOCUMENT CONVERSATION - Only for routed documents
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  // Check if document has been routed (has a recipient)
+  var isRouted = d.to || d.recipientId || d.recipientName;
+  
+  if (isRouted) {
+    var messages = getDocumentMessages(ref);
+    var unreadCount = getUnreadMessageCount(ref, getCurrentUserNotificationKey());
+    var unreadBadge = unreadCount > 0 ? '<span class="doc-conversation-unread">' + unreadCount + ' unread</span>' : '';
+    
+    html += '<div class="doc-conversation-section" id="doc-conversation-section">';
+    html += '<div class="doc-conversation-header">';
+    html += '<div class="doc-conversation-title">' + svgIcon("message", 15) + ' Document Conversation ' + unreadBadge + '</div>';
+    html += '</div>';
+    
+    html += '<div class="doc-conversation-messages" id="doc-conversation-messages">';
+    
+    if (messages.length === 0) {
+      html += '<div class="doc-conversation-empty">';
+      html += '<div class="doc-conversation-empty-icon">' + svgIcon("message", 32) + '</div>';
+      html += '<div>No messages yet</div>';
+      html += '<div style="font-size:12px;margin-top:0.5rem">Send a message to start the conversation</div>';
+      html += '</div>';
+    } else {
+      messages.forEach(function(msg) {
+        var isSent = msg.senderId === getCurrentUserNotificationKey();
+        var formattedDate = formatMessageDate(msg.createdAt);
+        
+        html += '<div class="doc-message ' + (isSent ? 'doc-message-sent' : 'doc-message-received') + '">';
+        html += '<div class="doc-message-sender">' + escapeHtml(msg.senderName) + '</div>';
+        html += '<div class="doc-message-time">' + formattedDate + '</div>';
+        html += '<div class="doc-message-content">' + escapeHtml(msg.message) + '</div>';
+        html += '</div>';
+      });
+    }
+    
+    html += '</div>'; // end messages
+    
+    // Message input area
+    html += '<div class="doc-message-input-area">';
+    html += '<textarea id="doc-message-input" class="doc-message-input" placeholder="Type a message..." rows="1" onkeydown="handleDocMessageKeydown(event, \'' + escapeHtml(ref) + '\')"></textarea>';
+    html += '<button class="doc-message-send-btn" onclick="sendDocumentMessage(\'' + escapeHtml(ref) + '\')">Send</button>';
+    html += '</div>';
+    
+    html += '</div>'; // end conversation section
+    
+    // Mark messages as read when viewing
+    markDocumentMessagesAsRead(ref, getCurrentUserNotificationKey());
   }
 
   html += '</div>'; // end background wrapper
@@ -6899,75 +7661,19 @@ function formatTrailTimestamp(ts) {
 }
 
 function getTrailActionIcon(action) {
-  if (action && action.indexOf("Sent") === 0) return "📤";
-  if (action && action.indexOf("Status changed") === 0) return "🔄";
+  if (action && action.indexOf("Sent") === 0) return svgIcon("send", 14);
+  if (action && action.indexOf("Status changed") === 0) return svgIcon("clock", 14);
   var icons = {
-    "Created": "📝",
-    "Sent": "📤",
-    "Received": "📥",
-    "For ARD Clearance": "🔍",
-    "For RD Approval": "📋",
-    "Cleared": "✅",
-    "Approved": "✅",
-    "E-Signed": "🖋️",
-    "E-Signed & Approved": "🖋️",
-    "Released": "📬",
-    "Archived": "🗄️",
-    "Returned": "↩",
-    "Disposed": "🗑️",
-    "Edited details": "📝"
+    "Created": svgIcon("fileplus", 14),
+    "Sent": svgIcon("send", 14),
+    "Received": svgIcon("inbox", 14),
+    "Archived": svgIcon("archive", 14),
+    "Returned": svgIcon("undo", 14),
+    "Disposed": svgIcon("trash", 14),
+    "Edited details": svgIcon("filetext", 14)
   };
   return icons[action] || "•";
 }
-
-function getNextPendingStep(status) {
-  var steps = {
-    "For ARD Clearance": "⏳ Awaiting ARD clearance",
-    "For RD Approval": "⏳ Awaiting RD approval",
-    "Approved": "⏳ Pending release",
-  };
-  return steps[status] || null;
-}
-
-function buildSyntheticTrail(d) {
-  // Builds a minimal trail from status when no trail array exists
-  var trail = [];
-  var t0 = d.date ? formatTrailTimestamp(d.date + "T08:30:00") : "—";
-  var t1 = d.date ? formatTrailTimestamp(d.date + "T09:15:00") : "—";
-  var t2 = d.date ? formatTrailTimestamp(d.date + "T11:45:00") : "—";
-  var t3 = d.date ? formatTrailTimestamp(d.date + "T14:30:00") : "—";
-  var t4 = d.date ? formatTrailTimestamp(d.date + "T16:00:00") : "—";
-
-  trail.push({ done: true, label: "📝 <strong>" + escapeHtml(d.from || "Sender") + "</strong> — Created / Submitted", time: t0 });
-
-  if (d.status === "For ARD Clearance") {
-    trail.push({ done: true, label: "📥 <strong>ORD</strong> — Received and logged", time: t1 });
-    trail.push({ done: false, label: "⏳ Awaiting ARD clearance", time: "Pending" });
-  } else if (d.status === "For RD Approval") {
-    trail.push({ done: true, label: "📥 <strong>ORD</strong> — Received and logged", time: t1 });
-    trail.push({ done: true, label: "✅ <strong>ARD</strong> — Cleared and forwarded", time: t2 });
-    trail.push({ done: false, label: "⏳ Awaiting RD approval", time: "Pending" });
-  } else if (d.status === "Approved") {
-    trail.push({ done: true, label: "📥 <strong>ORD</strong> — Received and logged", time: t1 });
-    trail.push({ done: true, label: "✅ <strong>ARD</strong> — Cleared and forwarded", time: t2 });
-    trail.push({ done: true, label: "✅ <strong>RD</strong> — Approved", time: t3 });
-    trail.push({ done: false, label: "⏳ Pending release", time: "Pending" });
-  } else if (d.status === "Released") {
-    trail.push({ done: true, label: "📥 <strong>ORD</strong> — Received and logged", time: t1 });
-    trail.push({ done: true, label: "✅ <strong>ARD</strong> — Cleared and forwarded", time: t2 });
-    trail.push({ done: true, label: "✅ <strong>RD</strong> — Approved", time: t3 });
-    trail.push({ done: true, label: "📬 <strong>ORD</strong> — Released", time: t4 });
-  } else if (d.status === "Archived") {
-    trail.push({ done: true, label: "📥 <strong>ORD</strong> — Received, approved, and released", time: t1 });
-    trail.push({ done: true, label: "🗄️ <strong>Archive</strong> — Document archived", time: t2 });
-  } else {
-    trail.push({ done: false, label: "⏳ " + escapeHtml(d.status || "In progress"), time: "Pending" });
-  }
-
-  return trail;
-}
-
-
 
 function printDocument(ref) {
   var d = getDocByRef(ref);
@@ -7018,155 +7724,6 @@ function printDocument(ref) {
   printWin.print();
 }
 
-/* ========= E-SIGNATURE SYSTEM ========= */
-
-function openESignModal(ref) {
-  var d = getDocByRef(ref);
-  if (!d) return;
-
-  var modal = document.createElement("div");
-  modal.className = "modal-overlay open";
-  modal.id = "esign-modal";
-
-  var signName = currentUser.name;
-  var signRole = currentUser.roleLabel;
-  var today = formatManilaDateTime(new Date());
-
-  modal.innerHTML = `
-    <div class="modal" style="max-width: 500px;">
-      <div class="modal-head">
-        <h3>E-Signature</h3>
-        <span class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</span>
-      </div>
-      <div class="modal-body" style="text-align: center; padding: 2rem;">
-        <div style="margin-bottom: 1.5rem; font-size: 14px; color: var(--muted);">
-          You are about to digitally sign document:
-          <div style="font-weight: 700; color: var(--navy); margin-top: 0.5rem; font-size: 16px;">${d.ref}</div>
-          <div style="font-style: italic; margin-top: 0.25rem;">"${d.subject}"</div>
-        </div>
-
-        <div id="signature-preview" style="border: 2px dashed var(--border); border-radius: 12px; padding: 2rem; background: #fff; position: relative; min-height: 150px; display: flex; flex-direction: column; align-items: center; justify-content: center;">
-          <div style="font-family: 'Brush Script MT', cursive; font-size: 36px; color: var(--navy); line-height: 1;">${signName}</div>
-          <div style="width: 80%; height: 1px; background: #333; margin: 10px 0;"></div>
-          <div style="font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Digitally Signed By</div>
-          <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">${signRole}</div>
-          <div style="font-size: 10px; color: var(--muted); margin-top: 2px;">Date: ${today}</div>
-          
-          <div style="position: absolute; top: 10px; right: 10px; opacity: 0.1; font-size: 40px;">🛡️</div>
-        </div>
-
-        <div style="margin-top: 1.5rem; display: flex; align-items: center; gap: 0.5rem; justify-content: center; font-size: 12px; color: var(--muted);">
-          <input type="checkbox" id="esign-consent" />
-          <label for="esign-consent">I confirm that this is my official e-signature</label>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn-sec" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
-        <button class="btn-send" onclick="confirmESign('${ref}')">Sign</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(modal);
-}
-
-function confirmESign(ref) {
-  var consent = document.getElementById("esign-consent");
-  if (!consent || !consent.checked) {
-    showError("Please check the consent box to proceed.");
-    return;
-  }
-
-  var d = getDocByRef(ref);
-  if (d) {
-    d.esignature = {
-      signedBy: currentUser.name,
-      role: currentUser.roleLabel,
-      date: new Date().toISOString(),
-    };
-
-    // Update tracking
-    ensureTrail(d);
-
-    d.tracking.trail.push({
-      user: currentUser.name,
-      action: "E-Signed & Approved",
-      timestamp: new Date().toISOString(),
-    });
-    d.tracking.lastUpdated = new Date().toISOString();
-    d.tracking.lastActor = currentUser.role;
-    d.tracking.updatedBy = currentUser.name;
-
-    showSuccess("Document digitally signed!");
-    document.getElementById("esign-modal").remove();
-
-    // Refresh view
-    viewDoc(ref);
-  }
-}
-
-function approveDocument(ref) {
-  var d = getDocByRef(ref);
-  if (!d) return;
-
-  var newStatus;
-  var action;
-  var verb;
-
-  if (d.status === "Approved" && currentUser.role === "admin") {
-    newStatus = "Released";
-    action = "Released";
-    verb = "Release";
-  } else if (d.status === "For Division Clearance" && ["dc", "admin"].includes(currentUser.role)) {
-    newStatus = "For ARD Clearance";
-    action = "Cleared by Division";
-    verb = "Clear";
-  } else if (d.status === "For ARD Clearance" && ["ard", "admin", "oic"].includes(currentUser.role)) {
-    newStatus = "For RD Approval";
-    action = "Cleared";
-    verb = "Clear";
-  } else if (d.status === "For RD Approval" && ["rd", "admin", "oic"].includes(currentUser.role)) {
-    newStatus = "Approved";
-    action = "Approved";
-    verb = "Approve";
-  } else {
-    showError("You are not authorized to approve this document at this stage.");
-    return;
-  }
-
-  showConfirmDialog({
-    title: verb + " Document",
-    message: "Are you sure you want to " + verb.toLowerCase() + " this document?",
-    detail: "This will advance the document to: " + newStatus,
-    confirmLabel: "Yes, " + verb,
-    cancelLabel: "Cancel",
-    variant: "primary"
-  }).then(function (confirmed) {
-    if (confirmed) {
-      d.status = newStatus;
-      // update division routing if advancing from division → ARD
-      if (newStatus === "For ARD Clearance") {
-        d.division = "Office of the Regional Director";
-      }
-
-      // Update tracking
-      ensureTrail(d);
-
-      d.tracking.trail.push({
-        user: currentUser.name,
-        action: action,
-        timestamp: new Date().toISOString(),
-      });
-      d.tracking.lastUpdated = new Date().toISOString();
-      d.tracking.lastActor = currentUser.role;
-      d.tracking.updatedBy = currentUser.name;
-
-      showSuccess("Document " + action.toLowerCase() + " and advanced to: " + newStatus);
-
-      // Refresh view
-      viewDoc(ref);
-    }
-  });
-}
 function tlItem(done, label, time) {
   var weight = done ? "600" : "400";
   var dotClass = done ? "done" : "";
@@ -7207,17 +7764,45 @@ function openCompose() {
     var toEl = document.getElementById("compose-to");
     var deadlineEl = document.getElementById("compose-deadline");
     var priorityEl = document.getElementById("compose-priority");
-    var remarksEl = document.getElementById("compose-remarks");
-    var remarksExtraEl = document.getElementById("compose-remarks-extra");
+    var instructionEl = document.getElementById("compose-instruction");
     if (divEl) divEl.value = "";
     if (toEl) toEl.value = "";
     if (deadlineEl) deadlineEl.value = "";
     if (priorityEl) priorityEl.value = "Normal";
-    if (remarksEl) remarksEl.value = "";
-    if (remarksExtraEl) remarksExtraEl.value = "";
+    if (instructionEl) instructionEl.value = "";
+    
+    // Reset direction to default (outgoing)
+    var directionRadios = document.querySelectorAll('input[name="compose-direction"]');
+    directionRadios.forEach(function(radio) {
+      radio.checked = (radio.value === "outgoing");
+    });
+    // Show/hide hint
+    var incomingHint = document.getElementById("incoming-hint");
+    var outgoingHint = document.getElementById("outgoing-hint");
+    if (incomingHint) incomingHint.style.display = "none";
+    if (outgoingHint) outgoingHint.style.display = "inline";
+    
     modal.classList.add("open");
     document.body.classList.add("modal-open");
+    
+    // Add event listeners for direction radio buttons
+    setTimeout(function() {
+      var directionRadios = document.querySelectorAll('input[name="compose-direction"]');
+      directionRadios.forEach(function(radio) {
+        radio.removeEventListener('change', handleDirectionChange);
+        radio.addEventListener('change', handleDirectionChange);
+      });
+    }, 100);
   }
+}
+
+// Handle direction radio button change
+function handleDirectionChange() {
+  var direction = document.querySelector('input[name="compose-direction"]:checked')?.value;
+  var incomingHint = document.getElementById("incoming-hint");
+  var outgoingHint = document.getElementById("outgoing-hint");
+  if (incomingHint) incomingHint.style.display = (direction === "incoming") ? "inline" : "none";
+  if (outgoingHint) outgoingHint.style.display = (direction === "outgoing") ? "inline" : "none";
 }
 
 // Open compose pre-selecting a specific document
@@ -7248,10 +7833,10 @@ function selectRouteDocument(ref) {
   summaryText.textContent = doc.ref + " — " + doc.subject;
   if (metaEl) {
     var meta = [];
-    if (doc.type) meta.push('<span>📄 ' + escapeHtml(doc.type) + '</span>');
+    if (doc.type) meta.push('<span>' + svgIcon("filetext", 14) + ' ' + escapeHtml(doc.type) + '</span>');
     var cat = doc.category || (doc.metadata && doc.metadata.category);
-    if (cat) meta.push('<span>🏷 ' + escapeHtml(cat) + '</span>');
-    if (doc.division) meta.push('<span>🏢 ' + escapeHtml(getDivisionAbbrev(doc.division)) + '</span>');
+    if (cat) meta.push('<span>' + svgIcon("tag", 14) + ' ' + escapeHtml(cat) + '</span>');
+    if (doc.division) meta.push('<span>' + svgIcon("building", 14) + ' ' + escapeHtml(getDivisionAbbrev(doc.division)) + '</span>');
     meta.push('<span>' + statusPill(doc.status || 'New') + '</span>');
     metaEl.innerHTML = meta.join('');
   }
@@ -7289,8 +7874,8 @@ function sendDoc() {
   var to = ((document.getElementById("compose-to") || {}).value || "").trim();
   var deadline = ((document.getElementById("compose-deadline") || {}).value || "").trim();
   var priority = ((document.getElementById("compose-priority") || {}).value || "Normal").trim();
-  var instruction = ((document.getElementById("compose-remarks") || {}).value || "").trim();
-  var remarks = ((document.getElementById("compose-remarks-extra") || {}).value || "").trim();
+  var instruction = ((document.getElementById("compose-instruction") || {}).value || "").trim();
+  var direction = document.querySelector('input[name="compose-direction"]:checked')?.value || "outgoing";
 
   if (!selectedRef) {
     showError("Please select a document from the repository before sending.");
@@ -7313,11 +7898,11 @@ function sendDoc() {
   documentToRoute.to = resolvedTo;
   documentToRoute.division = destDivision || documentToRoute.division || currentUser.division || "ORD";
   documentToRoute.instruction = instruction || documentToRoute.instruction || "";
-  documentToRoute.remarks = remarks || documentToRoute.remarks || "";
+  documentToRoute.direction = direction;
   if (deadline) documentToRoute.deadline = deadline;
   if (priority) documentToRoute.priority = priority;
   documentToRoute.status = "Sent";
-  documentToRoute.kind = "outgoing";
+  documentToRoute.kind = direction === "incoming" ? "incoming" : "outgoing";
   documentToRoute.lastSentBy = currentUser.name;
   documentToRoute.lastSentDate = formatDateISO(new Date());
   documentToRoute.tracking = documentToRoute.tracking || {};
@@ -7326,8 +7911,9 @@ function sendDoc() {
   documentToRoute.tracking.trail = documentToRoute.tracking.trail || [];
   documentToRoute.tracking.trail.push({
     user: currentUser.name,
-    action: "Sent to " + resolvedTo + (destDivision ? " (" + getDivisionAbbrev(destDivision) + ")" : ""),
+    action: "Sent " + direction + " to " + resolvedTo + (destDivision ? " (" + getDivisionAbbrev(destDivision) + ")" : ""),
     timestamp: new Date().toISOString(),
+    status: "Sent"
   });
 
   var resolvedRecipient = resolveRecipient(to);
@@ -7335,19 +7921,24 @@ function sendDoc() {
     documentToRoute.recipientId = resolvedRecipient.email || resolvedRecipient.id || resolvedRecipient.name;
     documentToRoute.recipientEmail = resolvedRecipient.email || "";
     documentToRoute.recipientName = resolvedRecipient.name || to;
+    var directionLabel = direction === "incoming" ? "Incoming" : "Outgoing";
     addNotification({
       recipientKey: getNotificationKeyForUser(resolvedRecipient),
       type: "document_received",
       documentId: documentToRoute.ref,
       documentRef: documentToRoute.ref,
       documentTitle: documentToRoute.subject,
+      documentDirection: direction,
       senderId: currentUser.email || currentUser.id || currentUser.name,
       senderName: currentUser.name,
       senderRole: currentUser.roleLabel || currentUser.role || "",
-      message: currentUser.name + " sent a document to you.",
+      message: currentUser.name + " sent you a " + directionLabel + " document.",
       preview: documentToRoute.subject,
     });
   }
+
+  // Save document changes to localStorage
+  saveDocuments();
 
   showSuccess("Document " + selectedRef + " sent successfully to " + resolvedTo + ".");
   closeCompose();
@@ -7374,7 +7965,7 @@ function openManualLogbook(defaultSubject, attachment) {
     currentUser.division || currentUser.name;
   document.getElementById("manual-subject").value = defaultSubject || "";
   document.getElementById("manual-to").value = "ORD";
-  document.getElementById("manual-status").value = "For ARD Clearance";
+  document.getElementById("manual-status").value = "Sent";
   document.getElementById("manual-physical").value = "no";
   document.body.classList.add("modal-open"); /* ← NEW */
 }
@@ -7434,8 +8025,16 @@ function openQuickSend(ref) {
   document.getElementById("quick-send-title").textContent =
     "Route Existing Document " + ref;
   document.getElementById("quick-send-to").value = d.to || "";
-  document.getElementById("quick-send-remarks").value = d.instruction || d.sendRemarks || "";
+  document.getElementById("quick-send-instruction").value = d.instruction || d.sendRemarks || "";
   document.getElementById("quick-send-outlook").value = d.outlookEmailContent || "";
+  
+  // Set direction radio button
+  var direction = d.direction || "outgoing";
+  var directionRadios = document.querySelectorAll('input[name="quick-send-direction"]');
+  directionRadios.forEach(function(radio) {
+    radio.checked = (radio.value === direction);
+  });
+  
   document.getElementById("quick-send-modal").classList.add("open");
   document.body.classList.add("modal-open");
 }
@@ -7451,11 +8050,13 @@ function submitQuickSend() {
   if (!d) return;
   var to = (document.getElementById("quick-send-to").value || "").trim();
   var instruction = (
-    document.getElementById("quick-send-remarks").value || ""
+    document.getElementById("quick-send-instruction").value || ""
   ).trim();
   var outlookContent = (
     document.getElementById("quick-send-outlook").value || ""
   ).trim();
+  var direction = document.querySelector('input[name="quick-send-direction"]:checked')?.value || "outgoing";
+  
   if (!to) {
     showError("Please fill in where to send the document.");
     return;
@@ -7464,6 +8065,7 @@ function submitQuickSend() {
   d.to = to;
   d.instruction = instruction || d.instruction || "";
   d.outlookEmailContent = outlookContent || d.outlookEmailContent || "";
+  d.direction = direction;
   if (instruction) {
     getDocumentThread(d).push(createThreadMessage("instruction", instruction));
   }
@@ -7476,8 +8078,8 @@ function submitQuickSend() {
   if (recipient && recipient.role) {
     d.toRole = recipient.role.toLowerCase();
   }
-  d.kind = "incoming";
-  d.status = getRoutingStatusForRecipient(to);
+  d.kind = direction === "incoming" ? "incoming" : "outgoing";
+  d.status = "Sent";
   d.lastSentBy = currentUser.name;
   d.lastSentDate = formatDateISO(new Date());
   d.from = currentUser.name;
@@ -7495,7 +8097,7 @@ function submitQuickSend() {
   ensureTrail(d);
   d.tracking.trail.push({
     user: currentUser.name,
-    action: "Sent to " + to,
+    action: "Sent " + direction + " to " + to,
     timestamp: new Date().toISOString(),
   });
   d.tracking.lastUpdated = new Date().toISOString();
@@ -7503,19 +8105,24 @@ function submitQuickSend() {
   d.tracking.updatedBy = currentUser.name;
 
   if (recipient) {
+    var directionLabel = direction === "incoming" ? "Incoming" : "Outgoing";
     addNotification({
       recipientKey: getNotificationKeyForUser(recipient),
       type: "document_received",
       documentId: d.ref,
       documentRef: d.ref,
       documentTitle: d.subject,
+      documentDirection: direction,
       senderId: currentUser.id || currentUser.email || currentUser.name,
       senderName: currentUser.name,
       senderRole: currentUser.roleLabel || currentUser.role || "",
-      message: currentUser.name + " sent you a document.",
+      message: currentUser.name + " sent you a " + directionLabel.toLowerCase() + " document.",
       preview: d.subject,
     });
   }
+
+  // Save document changes to localStorage
+  saveDocuments();
 
   closeQuickSend();
   renderNav();
@@ -7551,7 +8158,7 @@ function openLogbookEdit(ref) {
   document.getElementById("manual-subject").value = d.subject || "";
   document.getElementById("manual-to").value = d.to || "";
   document.getElementById("manual-status").value =
-    d.status || "For ARD Clearance";
+    d.status || "Sent";
   document.getElementById("manual-physical").value = d.physicalCopy
     ? "yes"
     : "no";
@@ -7586,6 +8193,185 @@ function closeUploadDocumentModal() {
   document.body.classList.remove("modal-open");
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// REGISTER DOCUMENT CHOICE (FILE OR EMAIL)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function openRegisterDocumentChoice() {
+  var modal = document.getElementById("register-choice-modal");
+  if (!modal) return;
+  modal.classList.add("open");
+  document.body.classList.add("modal-open");
+}
+
+function closeRegisterChoice() {
+  var modal = document.getElementById("register-choice-modal");
+  if (modal) modal.classList.remove("open");
+  document.body.classList.remove("modal-open");
+}
+
+function chooseRegisterFile() {
+  closeRegisterChoice();
+  setTimeout(function() {
+    openUploadDocumentModal();
+  }, 300);
+}
+
+function chooseRegisterEmail() {
+  closeRegisterChoice();
+  setTimeout(function() {
+    openRegisterEmailModal();
+  }, 300);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REGISTER EMAIL
+// ═══════════════════════════════════════════════════════════════════════════
+
+function openRegisterEmailModal() {
+  var modal = document.getElementById("register-email-modal");
+  if (!modal) return;
+  
+  // Auto-generate reference number
+  var refField = document.getElementById("register-email-ref");
+  var dateField = document.getElementById("register-email-date");
+  
+  if (refField) refField.value = nextSystemReference(formatDateISO(new Date()));
+  if (dateField) dateField.value = formatDateISO(new Date());
+  
+  // Clear all fields
+  var subjectField = document.getElementById("register-email-subject");
+  var fromField = document.getElementById("register-email-from");
+  var toField = document.getElementById("register-email-to");
+  var ccField = document.getElementById("register-email-cc");
+  var categoryField = document.getElementById("register-email-category");
+  var confidentialityField = document.getElementById("register-email-confidentiality");
+  var bodyField = document.getElementById("register-email-body");
+  
+  if (subjectField) subjectField.value = "";
+  if (fromField) fromField.value = "";
+  if (toField) toField.value = "";
+  if (ccField) ccField.value = "";
+  if (categoryField) categoryField.selectedIndex = 0;
+  if (confidentialityField) confidentialityField.selectedIndex = 0;
+  if (bodyField) bodyField.value = "";
+  
+  modal.classList.add("open");
+  document.body.classList.add("modal-open");
+}
+
+function closeRegisterEmail() {
+  var modal = document.getElementById("register-email-modal");
+  if (modal) modal.classList.remove("open");
+  document.body.classList.remove("modal-open");
+}
+
+function submitRegisterEmail() {
+  var ref = (document.getElementById("register-email-ref") || {}).value || "";
+  var subject = (document.getElementById("register-email-subject") || {}).value.trim();
+  var emailDate = (document.getElementById("register-email-date") || {}).value || formatDateISO(new Date());
+  var emailFrom = (document.getElementById("register-email-from") || {}).value.trim();
+  var emailTo = (document.getElementById("register-email-to") || {}).value.trim();
+  var emailCC = (document.getElementById("register-email-cc") || {}).value.trim();
+  var category = (document.getElementById("register-email-category") || {}).value || "Administrative";
+  var confidentiality = (document.getElementById("register-email-confidentiality") || {}).value || "Internal";
+  var emailBody = (document.getElementById("register-email-body") || {}).value.trim();
+
+  // Validation
+  if (!subject) {
+    showError("Please enter an email subject.");
+    return;
+  }
+  
+  if (!emailBody) {
+    showError("Please paste or enter the email content.");
+    return;
+  }
+
+  console.log('Creating email document:', ref, subject);
+
+  // Create email document record
+  var newEmailDoc = {
+    ref: ref,
+    documentId: ref,
+    type: "Email Communication",
+    category: category,
+    subject: subject,
+    referenceNumber: ref,
+    documentDate: emailDate,
+    confidentialityLevel: confidentiality,
+    priority: "Normal", // Default priority - will be set when document is sent
+    source: "Email",
+    sender: emailFrom || "Email",
+    from: emailFrom || "Email",
+    to: currentUser.division || "ORD",
+    description: "Email communication: " + subject,
+    uploadedBy: currentUser.name,
+    uploadedByRole: currentUser.roleLabel || currentUser.role || "",
+    status: "New",
+    date: emailDate,
+    kind: "incoming",
+    division: currentUser.division || "ORD",
+    physicalCopy: false,
+    version: 1,
+    versionHistory: [{
+      version: 1,
+      uploadedBy: currentUser.name,
+      date: emailDate,
+      note: "Email registered"
+    }],
+    // Email-specific fields
+    isEmail: true,
+    emailContent: {
+      from: emailFrom,
+      to: emailTo,
+      cc: emailCC,
+      subject: subject,
+      body: emailBody,
+      date: emailDate
+    },
+    metadata: {
+      documentType: "Email Communication",
+      category: category,
+      subject: subject,
+      referenceNumber: ref,
+      documentDate: emailDate,
+      confidentialityLevel: confidentiality,
+      priority: "Normal", // Default priority
+      source: "Email",
+      description: "Email communication: " + subject,
+      emailFrom: emailFrom,
+      emailTo: emailTo,
+      emailCC: emailCC
+    },
+    tracking: {
+      lastActor: currentUser.role,
+      lastUpdated: new Date().toISOString(),
+      trail: [{ 
+        user: currentUser.name, 
+        action: "Registered email communication", 
+        timestamp: new Date().toISOString() 
+      }],
+    },
+  };
+
+  // Add to DOCS array
+  DOCS.push(newEmailDoc);
+  
+  // Save to localStorage
+  saveDocuments();
+
+  console.log('Email document created:', newEmailDoc);
+
+  closeRegisterEmail();
+  showSuccess("Email communication registered successfully: " + ref);
+  
+  // Refresh documents page if currently viewing
+  if (currentPage === "documents" || currentPage === "logbook") {
+    showPage(currentPage);
+  }
+}
+
 function handleUploadDocumentFile(input) {
   var file = input.files && input.files[0];
   if (!file) return;
@@ -7604,7 +8390,6 @@ function submitUploadDocument() {
   var subject = (document.getElementById("upload-document-subject") || {}).value.trim();
   var date = (document.getElementById("upload-document-date") || {}).value || formatDateISO(new Date());
   var confidentiality = (document.getElementById("upload-document-confidentiality") || {}).value || "Internal";
-  var priority = (document.getElementById("upload-document-priority") || {}).value || "Normal";
   var source = (document.getElementById("upload-document-source") || {}).value.trim();
   var description = (document.getElementById("upload-document-description") || {}).value.trim();
   var file = currentUploadDocumentFile;
@@ -7623,7 +8408,7 @@ function submitUploadDocument() {
     referenceNumber: ref,
     documentDate: date,
     confidentialityLevel: confidentiality,
-    priority: priority,
+    priority: "Normal", // Default priority - will be set when document is sent
     source: source,
     sender: source,
     from: source,
@@ -7650,7 +8435,7 @@ function submitUploadDocument() {
       referenceNumber: ref,
       documentDate: date,
       confidentialityLevel: confidentiality,
-      priority: priority,
+      priority: "Normal", // Default priority
       source: source,
       description: description,
     },
@@ -7798,7 +8583,7 @@ function showVersionHistory(ref) {
     if (v.fileName) {
       h += '<span style="font-size:11px;color:var(--muted)">' + escapeHtml(v.fileName) + '</span>';
     } else if (doc.attachments && doc.attachments.length && isCurrent) {
-      h += '<button class="btn-sm" onclick="downloadDocument(\'' + escapeHtml(doc.ref) + '\')">⬇ Download</button>';
+      h += '<button class="btn-sm" onclick="downloadDocument(\'' + escapeHtml(doc.ref) + '\')"> ' + svgIcon("download", 14) + ' Download</button>';
     } else {
       h += '—';
     }
@@ -7807,8 +8592,8 @@ function showVersionHistory(ref) {
   h += '</tbody></table></div>';
 
   h += '<div style="margin-top:1.25rem;display:flex;gap:.5rem">';
-  h += '<button class="btn-sm primary" onclick="closeVersionHistoryModal();openUploadVersionModal(\'' + escapeHtml(doc.ref) + '\')">📤 Upload New Version</button>';
-  h += '<button class="btn-sm" onclick="closeVersionHistoryModal();openComposeWithDoc(\'' + escapeHtml(doc.ref) + '\')">✉️ Send This Document</button>';
+  h += '<button class="btn-sm primary" onclick="closeVersionHistoryModal();openUploadVersionModal(\'' + escapeHtml(doc.ref) + '\')">' + svgIcon("send", 14) + ' Upload New Version</button>';
+  h += '<button class="btn-sm" onclick="closeVersionHistoryModal();openComposeWithDoc(\'' + escapeHtml(doc.ref) + '\')"> ' + svgIcon("send", 14) + ' Send This Document</button>';
   h += '</div>';
 
   body.innerHTML = h;
@@ -8023,7 +8808,7 @@ function showMetadataModal(ref) {
   }
 
   h += '<div style="background:#fafafa;border-radius:8px;border:1px dashed var(--border);padding:.75rem 1rem;font-size:11.5px;color:var(--muted);line-height:1.5">';
-  h += '📌 This metadata structure is ready for future AI-assisted search and retrieval integration. Fields are captured at upload time and are consistent across all documents in the DRMS.';
+  h += '' + svgIcon("pin", 14) + ' This metadata structure is ready for future AI-assisted search and retrieval integration. Fields are captured at upload time and are consistent across all documents in the DRMS.';
   h += '</div>';
 
   body.innerHTML = h;
@@ -8123,7 +8908,7 @@ function submitUploadEncodeChoice(autoEncode) {
       from: currentUser.name,
       to: currentUser.division || "ORD",
       subject: displayTitle,
-      status: "For ARD Clearance",
+      status: "Sent",
       date: today,
       conf: false,
       kind: "incoming",
@@ -8319,7 +9104,7 @@ function saveManualLogbook() {
         ]
       }
     };
-    if (status !== "For ARD Clearance") {
+    if (status !== "Sent") {
       newDoc.tracking.trail.push({
         user: currentUser.name,
         action: "Status set to " + status,
@@ -8370,14 +9155,17 @@ function setTab(el, t) {
 
 function filterDocsByTab(docs, tab) {
   if (tab === "all") return docs;
-  if (tab === "pending") return docs.filter(function (d) {
-    return ["For ARD Clearance", "For RD Approval"].includes(d.status);
+  if (tab === "active") return docs.filter(function (d) {
+    return ["Sent", "Acknowledged", "In Progress", "Needs Clarification", "On Hold"].includes(d.status);
   });
-  if (tab === "approved") return docs.filter(function (d) {
-    return d.status === "Approved";
+  if (tab === "clarification") return docs.filter(function (d) {
+    return d.status === "Needs Clarification";
   });
-  if (tab === "released") return docs.filter(function (d) {
-    return d.status === "Released";
+  if (tab === "onhold") return docs.filter(function (d) {
+    return d.status === "On Hold";
+  });
+  if (tab === "done") return docs.filter(function (d) {
+    return d.status === "Done";
   });
   return docs;
 }
@@ -8391,7 +9179,7 @@ function renderIncomingTable(tab) {
   if (!tbody) return;
   var h = "";
   if (docs.length === 0) {
-    h = emptyStateRow(9, "📭", "No incoming documents", tab === "all" ? "Documents addressed to you will appear here." : "No documents match this filter.");
+    h = emptyStateRow(9, svgIcon("inbox", 40), "No incoming documents", tab === "all" ? "Documents addressed to you will appear here." : "No documents match this filter.");
   } else {
     docs.forEach(function (d) {
       var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>' : "";
@@ -8419,7 +9207,7 @@ function renderOutgoingTable(tab) {
   if (!tbody) return;
   var h = "";
   if (docs.length === 0) {
-    h = emptyStateRow(9, "📤", "No outgoing documents", tab === "all" ? "Documents you send will appear here." : "No documents match this filter.");
+    h = emptyStateRow(9, svgIcon("send", 40), "No outgoing documents", tab === "all" ? "Documents you send will appear here." : "No documents match this filter.");
   } else {
     docs.forEach(function (d) {
       var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>' : "";
@@ -8520,7 +9308,7 @@ function resetScannerState() {
   currentScanData = null;
   document.getElementById("scan-preview").innerHTML = `
       <div style="text-align: center; opacity: 0.4;">
-        <div style="font-size: 60px; margin-bottom: 1rem;">📑</div>
+        <div style="font-size: 60px; margin-bottom: 1rem;">${svgIcon("filetext", 56)}</div>
         <div style="font-weight: 600; color: var(--navy);">Waiting for scan...</div>
         <div style="font-size: 12px; color: var(--muted); margin-top: 0.5rem;">Document will appear here after scanning</div>
       </div>
@@ -8528,7 +9316,7 @@ function resetScannerState() {
   document.getElementById("ocr-results-section").style.display = "none";
   document.getElementById("ocr-extracted-text").value = "";
   document.getElementById("start-scan-btn").innerHTML =
-    '<span style="font-size: 20px;">📷</span> Start Scanning';
+    '<span style="font-size: 20px;">' + svgIcon("camera", 20) + '</span> Start Scanning';
   document.getElementById("start-scan-btn").disabled = false;
   document.getElementById("scan-status-pill").style.display = "none";
 }
@@ -8567,11 +9355,11 @@ function detectScanners() {
 
     var scannerList = detectedScanners
       .map(function (scanner) {
-        var statusIcon = scanner.status === "ready" ? "🟢" : "🟠";
+        var statusIcon = scanner.status === "ready" ? svgIcon("check", 14) : svgIcon("alert", 14);
         return `
           <div onclick="selectScanner('${scanner.name}')" style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; border: 1.5px solid #e2e8f0; border-radius: 10px; margin-bottom: 0.5rem; background: #fff; cursor: pointer; transition: all 0.2s;" onmouseover="this.style.borderColor='var(--navy3)'" onmouseout="this.style.borderColor='#e2e8f0'">
             <div style="display: flex; align-items: center; gap: 0.75rem;">
-              <div style="width: 32px; height: 32px; background: #f1f5f9; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px;">🖨️</div>
+              <div style="width: 32px; height: 32px; background: #f1f5f9; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px;">${svgIcon("print", 16)}</div>
               <div>
                 <div style="font-weight: 700; font-size: 13px; color: var(--navy);">${scanner.name}</div>
                 <div style="font-size: 10px; color: var(--muted);">${scanner.connection} • ${scanner.type.toUpperCase()}</div>
@@ -8597,7 +9385,7 @@ function selectScanner(scannerName) {
   if (selectedScanner) {
     statusDiv.innerHTML = `
         <div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; background: #ecfdf5; border: 1.5px solid #10b981; border-radius: 10px;">
-          <div style="width: 32px; height: 32px; background: #fff; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; border: 1px solid #10b981;">🟢</div>
+          <div style="width: 32px; height: 32px; background: #fff; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; border: 1px solid #10b981;">${svgIcon("check", 16)}</div>
           <div>
             <div style="font-weight: 700; font-size: 13px; color: #065f46;">${selectedScanner.name}</div>
             <div style="font-size: 10px; color: #047857;">Ready to scan • ${selectedScanner.connection}</div>
@@ -8634,13 +9422,13 @@ function startScanning() {
   var scanBtn = document.getElementById("start-scan-btn");
   var previewDiv = document.getElementById("scan-preview");
 
-  scanBtn.innerHTML = "⏳ Scanning...";
+  scanBtn.innerHTML = svgIcon("refresh", 14) + " Scanning...";
   scanBtn.disabled = true;
 
   // Show scanning animation
   previewDiv.innerHTML = `
       <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%;">
-        <div style="font-size: 60px; margin-bottom: 1.5rem; animation: pulse 1.5s infinite;">📷</div>
+        <div style="font-size: 60px; margin-bottom: 1.5rem; animation: pulse 1.5s infinite;">${svgIcon("camera", 56)}</div>
         <div style="color: var(--navy); font-weight: 700; font-size: 18px; margin-bottom: 0.5rem;">Scanning Document...</div>
         <div style="color: var(--muted); font-size: 13px;">Capturing image from source</div>
         <div style="width: 250px; height: 6px; background: #e2e8f0; border-radius: 3px; margin-top: 1.5rem; overflow: hidden; position: relative;">
@@ -8688,7 +9476,7 @@ function startScanning() {
         <div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; padding: 1rem; position: relative; animation: fadeIn 0.5s ease-out;">
           <img src="${scannedImage}" style="max-width: 100%; max-height: 100%; border-radius: 4px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); border: 1px solid #e2e8f0;">
           <div style="position: absolute; top: 1.5rem; right: 1.5rem; background: #10b981; color: white; padding: 0.5rem 1rem; border-radius: 20px; font-size: 11px; font-weight: 700; box-shadow: 0 4px 10px rgba(16, 185, 129, 0.3); display: flex; align-items: center; gap: 0.5rem;">
-            <span>✅</span> Captured
+            <span>${svgIcon("check", 14)}</span> Captured
           </div>
         </div>
       `;
@@ -8706,7 +9494,7 @@ function processOCR(imageData) {
 
   ocrSection.style.display = "block";
   ocrText.value =
-    "🔍 Initializing AI analysis...\n⏳ Analyzing document structure...\n📄 Extracting text layers...";
+    "Initializing AI analysis...\nAnalyzing document structure...\nExtracting text layers...";
 
   // Simulate OCR processing
   setTimeout(function () {
@@ -8808,9 +9596,9 @@ function updateModalFooter() {
   var footer = document.getElementById("ocr-modal-footer");
   footer.innerHTML = `
       <button class="btn-sec" onclick="closeOCRScanner()" style="padding: 0.75rem 1.5rem; font-weight: 600;">Cancel</button>
-      <button class="btn-sec" onclick="retryOCR()" style="padding: 0.75rem 1.5rem; font-weight: 600;">🔄 Retry OCR</button>
+      <button class="btn-sec" onclick="retryOCR()" style="padding: 0.75rem 1.5rem; font-weight: 600;">${svgIcon("refresh", 14)} Retry OCR</button>
       <button class="btn-send" onclick="confirmEncoding()" style="padding: 0.75rem 2rem; font-weight: 700; background: var(--success); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);">
-        ✅ Confirm & Encode
+        ${svgIcon("check", 16)} Confirm & Encode
       </button>
     `;
 }
@@ -8838,7 +9626,7 @@ function autoEncodeDocument() {
     from: currentUser.name,
     to: currentUser.division || "ORD",
     subject: "Document scanned on " + today,
-    status: "For Processing",
+    status: "Sent",
     date: today,
     conf: false,
     kind: "incoming",
@@ -8883,7 +9671,7 @@ function manualEncodeDocument() {
     from: currentUser.name,
     to: currentUser.division || "ORD",
     subject: document.getElementById("manual-subject").value.trim(),
-    status: "For Processing",
+    status: "Sent",
     date: today,
     conf: false,
     kind: document.getElementById("manual-direction").value,
@@ -9128,7 +9916,7 @@ function checkNearDeadlines() {
   var nearDeadlines = userDocs.filter((doc) => {
     if (!doc.deadline) return false;
     if (
-      doc.status === "Released" ||
+      doc.status === "Done" ||
       doc.status === "Archived" ||
       doc.status === "Disposed"
     )
@@ -9221,7 +10009,7 @@ function createExpiredDocNotification(doc, type) {
   notifItem.className = "notif-item";
 
   var urgencyText = type === "expired" ? "EXPIRED" : "expires soon";
-  var urgencyIcon = type === "expired" ? "🚨" : "⚠️";
+  var urgencyIcon = type === "expired" ? svgIcon("alert", 14) : svgIcon("clock", 14);
   var urgencyClass = type === "expired" ? "danger" : "warning";
 
   notifItem.innerHTML = `
@@ -9238,13 +10026,16 @@ function createExpiredDocNotification(doc, type) {
 }
 
 function updateNotificationBadge(count) {
-  var notifDot = document.querySelector(".notif-dot");
+  var notifDot = document.getElementById("notif-badge-dot");
+  var notifCount = document.getElementById("notif-badge-count");
   if (notifDot) {
     if (count > 0) {
       notifDot.style.display = "block";
-      notifDot.textContent = count > 9 ? "9+" : count.toString();
+      notifCount.style.display = "inline-block";
+      notifCount.textContent = count > 9 ? "9+" : count.toString();
     } else {
       notifDot.style.display = "none";
+      notifCount.style.display = "none";
     }
   }
 }
@@ -9253,12 +10044,12 @@ function showExpiredDocumentAlerts() {
   var expiredDocStatus = checkExpiredDocuments();
 
   if (expiredDocStatus.expired.length > 0) {
-    var message = `🚨 ${expiredDocStatus.expired.length} document(s) have expired and need immediate disposal`;
+    var message = `${expiredDocStatus.expired.length} document(s) have expired and need immediate disposal`;
     showToast(message, "error", 5000);
   }
 
   if (expiredDocStatus.nearExpiry.length > 0) {
-    var message = `⚠️ ${expiredDocStatus.nearExpiry.length} document(s) will expire within 30 days`;
+    var message = `${expiredDocStatus.nearExpiry.length} document(s) will expire within 30 days`;
     showToast(message, "warning", 4000);
   }
 }
@@ -9289,9 +10080,9 @@ function renderDisposal() {
     '<div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:1.25rem">';
   h += '<div style="display:flex;gap:.5rem">';
   h +=
-    '<button class="btn-sm primary" onclick="openRetentionPolicyModal()">⚙️ Retention Policies</button>';
+    '<button class="btn-sm primary" onclick="openRetentionPolicyModal()"> ' + svgIcon("settings", 14) + ' Retention Policies</button>';
   h +=
-    '<button class="btn-sm" onclick="exportDisposalReport()">📊 Export Report</button>';
+    '<button class="btn-sm" onclick="exportDisposalReport()">' + svgIcon("barchart", 14) + ' Export Report</button>';
   h += "</div></div>";
 
   // Filter schedule based on user role/division
@@ -9309,7 +10100,7 @@ function renderDisposal() {
   h +=
     '<div class="card" style="margin-bottom:1rem;background:#fff3cd;border:1px solid #ffeaa7">';
   h +=
-    '<div class="card-head"><div class="card-title">⚠️ Disposal Alerts</div></div>';
+    '<div class="card-head"><div class="card-title"> ' + svgIcon("trash", 15) + ' Disposal Alerts</div></div>';
   if (userDisposalAlerts.length === 0) {
     h +=
       '<div style="padding:1rem;text-align:center;color:#856404">No documents due for disposal in the next 30 days</div>';
@@ -9347,7 +10138,7 @@ function renderDisposal() {
     "<thead><tr><th>Reference No.</th><th>Document Type</th><th>Subject</th><th>Disposal Date</th><th>Days Until</th><th>Action</th><th>Status</th><th>Actions</th></tr></thead><tbody>";
 
   if (userDisposalSchedule.length === 0) {
-    h += emptyStateRow(8, "🗑️", "No disposal schedule entries", "Documents scheduled for disposal will appear here.");
+    h += emptyStateRow(8, svgIcon("trash", 40), "No disposal schedule entries", "Documents scheduled for disposal will appear here.");
   }
 
   userDisposalSchedule.forEach(function (item) {
@@ -9455,7 +10246,7 @@ function openRetentionPolicyModal() {
   modal.innerHTML = `
     <div class="modal" style="max-width: 800px;">
       <div class="modal-head">
-        <h3>📋 Retention Policy Management</h3>
+        <h3>${svgIcon("clipboard", 16)} Retention Policy Management</h3>
         <span class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</span>
       </div>
       <div class="modal-body">
@@ -9546,9 +10337,9 @@ function renderEnhancedReports() {
   h += "</div>";
   h += '<div style="display:flex;gap:1rem;">';
   h +=
-    '<button onclick="openCustomizationModal()" style="background:var(--pill);border:1px solid var(--border);padding:0.75rem 1.5rem;border-radius:8px;cursor:pointer;font-weight:500;">⚙️ Customize</button>';
+    '<button onclick="openCustomizationModal()" style="background:var(--pill);border:1px solid var(--border);padding:0.75rem 1.5rem;border-radius:8px;cursor:pointer;font-weight:500;"> ' + svgIcon("sliders", 14) + ' Customize</button>';
   h +=
-    '<button onclick="resetReportFilters()" style="background:var(--pill);border:1px solid var(--border);padding:0.75rem 1.5rem;border-radius:8px;cursor:pointer;font-weight:500;">🔄 Reset</button>';
+    '<button onclick="resetReportFilters()" style="background:var(--pill);border:1px solid var(--border);padding:0.75rem 1.5rem;border-radius:8px;cursor:pointer;font-weight:500;">' + svgIcon("refresh", 14) + ' Reset</button>';
   h += "</div>";
   h += "</div>";
   h += "</div>";
@@ -9562,7 +10353,7 @@ function renderEnhancedReports() {
   if (dashboardPreferences.visibleWidgets.statusChart) {
     firstRowVisible = true;
     h += '<div style="background:#fff;border-radius:12px;padding:2rem;box-shadow:0 4px 20px rgba(0,0,0,0.08);border:1px solid var(--border);">';
-    h += '<h3 style="margin:0 0 1.5rem 0;color:var(--navy);font-size:1.3rem;font-weight:600;">📊 Document Status Overview</h3>';
+    h += '<h3 style="margin:0 0 1.5rem 0;color:var(--navy);font-size:1.3rem;font-weight:600;">' + svgIcon("barchart", 16) + ' Document Status Overview</h3>';
     h += '<div id="status-chart" style="height:300px;position:relative;">';
     h += renderStatusChart();
     h += '</div>';
@@ -9573,7 +10364,7 @@ function renderEnhancedReports() {
   if (dashboardPreferences.visibleWidgets.divisionChart) {
     firstRowVisible = true;
     h += '<div style="background:#fff;border-radius:12px;padding:2rem;box-shadow:0 4px 20px rgba(0,0,0,0.08);border:1px solid var(--border);">';
-    h += '<h3 style="margin:0 0 1.5rem 0;color:var(--navy);font-size:1.3rem;font-weight:600;">📁 Division Distribution</h3>';
+    h += '<h3 style="margin:0 0 1.5rem 0;color:var(--navy);font-size:1.3rem;font-weight:600;">' + svgIcon("folder", 16) + ' Division Distribution</h3>';
     h += '<div id="division-chart" style="height:300px;position:relative;">';
     h += renderDivisionChart();
     h += '</div>';
@@ -9591,7 +10382,7 @@ function renderEnhancedReports() {
   if (dashboardPreferences.visibleWidgets.typeChart) {
     secondRowVisible = true;
     h += '<div style="background:#fff;border-radius:12px;padding:2rem;box-shadow:0 4px 20px rgba(0,0,0,0.08);border:1px solid var(--border);">';
-    h += '<h3 style="margin:0 0 1.5rem 0;color:var(--navy);font-size:1.3rem;font-weight:600;">📋 Document Types</h3>';
+    h += '<h3 style="margin:0 0 1.5rem 0;color:var(--navy);font-size:1.3rem;font-weight:600;">' + svgIcon("clipboard", 16) + ' Document Types</h3>';
     h += '<div id="type-chart" style="height:300px;position:relative;">';
     h += renderTypeChart();
     h += '</div>';
@@ -9602,7 +10393,7 @@ function renderEnhancedReports() {
   if (dashboardPreferences.visibleWidgets.trendChart) {
     secondRowVisible = true;
     h += '<div style="background:#fff;border-radius:12px;padding:2rem;box-shadow:0 4px 20px rgba(0,0,0,0.08);border:1px solid var(--border);">';
-    h += '<h3 style="margin:0 0 1.5rem 0;color:var(--navy);font-size:1.3rem;font-weight:600;">📈 Monthly Trend</h3>';
+    h += '<h3 style="margin:0 0 1.5rem 0;color:var(--navy);font-size:1.3rem;font-weight:600;">' + svgIcon("trending", 16) + ' Monthly Trend</h3>';
     h += '<div id="trend-chart" style="height:300px;position:relative;">';
     h += renderTrendChart();
     h += '</div>';
@@ -9614,10 +10405,10 @@ function renderEnhancedReports() {
   // Show message if no charts are visible
   if (!firstRowVisible && !secondRowVisible) {
     h += '<div style="background:#fff;border-radius:12px;padding:3rem 2rem;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.08);border:1px solid var(--border);margin-bottom:2rem;">';
-    h += '<div style="font-size:3rem;margin-bottom:1rem;opacity:0.5;">📊</div>';
+    h += '<div style="font-size:3rem;margin-bottom:1rem;opacity:0.5;">' + svgIcon("barchart", 48) + '</div>';
     h += '<h3 style="color:var(--muted);margin:0 0 0.5rem 0;">No Charts Visible</h3>';
     h += '<p style="color:var(--muted);margin:0 0 1rem 0;">All dashboard widgets are currently hidden.</p>';
-    h += '<button onclick="openCustomizationModal()" class="btn-send" style="padding:0.75rem 2rem;">⚙️ Customize Dashboard</button>';
+    h += '<button onclick="openCustomizationModal()" class="btn-send" style="padding:0.75rem 2rem;"> ' + svgIcon("sliders", 14) + ' Customize Dashboard</button>';
     h += '</div>';
   }
 
@@ -9625,7 +10416,7 @@ function renderEnhancedReports() {
   h +=
     '<div style="background:#fff;border-radius:12px;padding:2rem;margin-bottom:2rem;box-shadow:0 4px 20px rgba(0,0,0,0.08);border:1px solid var(--border);">';
   h +=
-    '<h2 style="margin:0 0 1.5rem 0;color:var(--navy);font-size:1.5rem;font-weight:600;">📊 Reports Configuration</h2>';
+    '<h2 style="margin:0 0 1.5rem 0;color:var(--navy);font-size:1.5rem;font-weight:600;">' + svgIcon("barchart", 16) + ' Reports Configuration</h2>';
   h +=
     '<p style="margin:0 0 2rem 0;color:var(--muted);font-size:1rem;">Customize your report parameters and generate detailed reports</p>';
 
@@ -9692,7 +10483,7 @@ function renderEnhancedReports() {
   // Generate Report Button
   h += '<div style="text-align:center;">';
   h +=
-    '<button onclick="generateReport()" style="background:var(--navy);color:#fff;padding:1rem 3rem;border:none;border-radius:8px;font-size:1.1rem;font-weight:600;cursor:pointer;transition:all 0.3s ease;">📊 Generate Report</button>';
+    '<button onclick="generateReport()" style="background:var(--navy);color:#fff;padding:1rem 3rem;border:none;border-radius:8px;font-size:1.1rem;font-weight:600;cursor:pointer;transition:all 0.3s ease;">' + svgIcon("barchart", 18) + ' Generate Report</button>';
   h += "</div>";
 
   h += "</div>";
@@ -9701,7 +10492,7 @@ function renderEnhancedReports() {
   h +=
     '<div style="background:#fff;border-radius:12px;padding:2rem;margin-bottom:2rem;box-shadow:0 4px 20px rgba(0,0,0,0.08);border:1px solid var(--border);">';
   h +=
-    '<h2 style="margin:0 0 1.5rem 0;color:var(--navy);font-size:1.5rem;font-weight:600;">📤 Export Options</h2>';
+    '<h2 style="margin:0 0 1.5rem 0;color:var(--navy);font-size:1.5rem;font-weight:600;">' + svgIcon("send", 16) + ' Export Options</h2>';
   h +=
     '<p style="margin:0 0 2rem 0;color:var(--muted);font-size:1rem;">Choose your preferred export format for the generated report</p>';
 
@@ -9711,7 +10502,7 @@ function renderEnhancedReports() {
   // PDF Export Card
   h +=
     '<div onclick="exportToPDF()" style="border:2px solid var(--border);border-radius:12px;padding:2rem;text-align:center;cursor:pointer;transition:all 0.3s ease;background:var(--pill);">';
-  h += '<div style="font-size:3rem;margin-bottom:1rem;">📄</div>';
+  h += '<div style="font-size:3rem;margin-bottom:1rem;">' + svgIcon("filetext", 48) + '</div>';
   h +=
     '<h3 style="margin:0 0 0.5rem 0;color:var(--navy);font-size:1.2rem;font-weight:600;">Export to PDF</h3>';
   h +=
@@ -9721,7 +10512,7 @@ function renderEnhancedReports() {
   // Excel Export Card
   h +=
     '<div onclick="exportToExcel()" style="border:2px solid var(--border);border-radius:12px;padding:2rem;text-align:center;cursor:pointer;transition:all 0.3s ease;background:var(--pill);">';
-  h += '<div style="font-size:3rem;margin-bottom:1rem;">📊</div>';
+  h += '<div style="font-size:3rem;margin-bottom:1rem;">' + svgIcon("barchart", 48) + '</div>';
   h +=
     '<h3 style="margin:0 0 0.5rem 0;color:var(--navy);font-size:1.2rem;font-weight:600;">Export to Excel</h3>';
   h +=
@@ -9731,7 +10522,7 @@ function renderEnhancedReports() {
   // Print Report Card
   h +=
     '<div onclick="printReport()" style="border:2px solid var(--border);border-radius:12px;padding:2rem;text-align:center;cursor:pointer;transition:all 0.3s ease;background:var(--pill);">';
-  h += '<div style="font-size:3rem;margin-bottom:1rem;">🖨️</div>';
+  h += '<div style="font-size:3rem;margin-bottom:1rem;">' + svgIcon("print", 48) + '</div>';
   h +=
     '<h3 style="margin:0 0 0.5rem 0;color:var(--navy);font-size:1.2rem;font-weight:600;">Print Report</h3>';
   h +=
@@ -9741,7 +10532,7 @@ function renderEnhancedReports() {
   // Preview Card
   h +=
     '<div onclick="previewReport()" style="border:2px solid var(--border);border-radius:12px;padding:2rem;text-align:center;cursor:pointer;transition:all 0.3s ease;background:var(--pill);">';
-  h += '<div style="font-size:3rem;margin-bottom:1rem;">👁️</div>';
+  h += '<div style="font-size:3rem;margin-bottom:1rem;">' + svgIcon("eye", 48) + '</div>';
   h +=
     '<h3 style="margin:0 0 0.5rem 0;color:var(--navy);font-size:1.2rem;font-weight:600;">Preview</h3>';
   h +=
@@ -9766,11 +10557,11 @@ function renderEnhancedReports() {
   h += "</div>";
   h += '<div style="display:flex;gap:1rem;">';
   h +=
-    '<button onclick="exportToPDF()" style="background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.3);color:#fff;padding:0.75rem 1.5rem;border-radius:8px;cursor:pointer;font-weight:500;">📄 PDF</button>';
+    '<button onclick="exportToPDF()" style="background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.3);color:#fff;padding:0.75rem 1.5rem;border-radius:8px;cursor:pointer;font-weight:500;">' + svgIcon("filetext", 14) + ' PDF</button>';
   h +=
-    '<button onclick="exportToExcel()" style="background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.3);color:#fff;padding:0.75rem 1.5rem;border-radius:8px;cursor:pointer;font-weight:500;">📊 Excel</button>';
+    '<button onclick="exportToExcel()" style="background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.3);color:#fff;padding:0.75rem 1.5rem;border-radius:8px;cursor:pointer;font-weight:500;">' + svgIcon("barchart", 14) + ' Excel</button>';
   h +=
-    '<button onclick="printReport()" style="background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.3);color:#fff;padding:0.75rem 1.5rem;border-radius:8px;cursor:pointer;font-weight:500;">🖨️ Print</button>';
+    '<button onclick="printReport()" style="background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.3);color:#fff;padding:0.75rem 1.5rem;border-radius:8px;cursor:pointer;font-weight:500;"> ' + svgIcon("print", 14) + ' Print</button>';
   h += "</div>";
   h += "</div>";
   h += "</div>";
@@ -9851,26 +10642,26 @@ function generateReportContent(type, fromDate, toDate, division) {
   h +=
     '<div class="summary-card" style="background:var(--pill);padding:1rem;border-radius:8px;text-align:center;">';
   h +=
-    '<div style="font-size:24px;font-weight:600;color:var(--success);">' +
-    getDocumentCountByStatus(filteredDocs, "Approved") +
+    '<div style="font-size:24px;font-weight:600;color:var(--warn);">' +
+    getDocumentCountByStatus(filteredDocs, "In Progress") +
     "</div>";
-  h += '<div style="font-size:12px;color:var(--muted);">Approved</div>';
+  h += '<div style="font-size:12px;color:var(--muted);">In Progress</div>';
   h += "</div>";
   h +=
     '<div class="summary-card" style="background:var(--pill);padding:1rem;border-radius:8px;text-align:center;">';
   h +=
-    '<div style="font-size:24px;font-weight:600;color:var(--warn);">' +
-    getDocumentCountByStatus(filteredDocs, "For RD Approval") +
+    '<div style="font-size:24px;font-weight:600;color:var(--success);">' +
+    getDocumentCountByStatus(filteredDocs, "Done") +
     "</div>";
-  h += '<div style="font-size:12px;color:var(--muted);">Pending Approval</div>';
+  h += '<div style="font-size:12px;color:var(--muted);">Done</div>';
   h += "</div>";
   h +=
     '<div class="summary-card" style="background:var(--pill);padding:1rem;border-radius:8px;text-align:center;">';
   h +=
     '<div style="font-size:24px;font-weight:600;color:var(--info);">' +
-    getDocumentCountByStatus(filteredDocs, "Released") +
+    getDocumentCountByStatus(filteredDocs, "Archived") +
     "</div>";
-  h += '<div style="font-size:12px;color:var(--muted);">Released</div>';
+  h += '<div style="font-size:12px;color:var(--muted);">Archived</div>';
   h += "</div>";
   h += "</div>";
 
@@ -10101,14 +10892,14 @@ function openCustomizationModal() {
   var modalHTML = '<div class="modal-overlay" id="customization-modal" onclick="closeCustomizationModal(event)">';
   modalHTML += '<div class="modal" style="max-width:650px;" onclick="event.stopPropagation();">';
   modalHTML += '<div class="modal-head">';
-  modalHTML += '<h3>⚙️ Customize Dashboard</h3>';
+  modalHTML += '<h3> ' + svgIcon("sliders", 14) + ' Customize Dashboard</h3>';
   modalHTML += '<span class="modal-close" onclick="closeCustomizationModal()">✕</span>';
   modalHTML += '</div>';
   modalHTML += '<div class="modal-body" style="max-height:500px;overflow-y:auto;">';
 
   // Visible Widgets Section
   modalHTML += '<div style="margin-bottom:1.5rem;">';
-  modalHTML += '<label style="font-weight:600;font-size:14px;color:var(--navy);display:block;margin-bottom:0.75rem;">📊 VISIBLE WIDGETS</label>';
+  modalHTML += '<label style="font-weight:600;font-size:14px;color:var(--navy);display:block;margin-bottom:0.75rem;">' + svgIcon("barchart", 14) + ' VISIBLE WIDGETS</label>';
   modalHTML += '<div style="background:var(--pill);padding:1rem;border-radius:8px;display:flex;flex-direction:column;gap:0.75rem;">';
 
   modalHTML += '<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;padding:0.5rem;">';
@@ -10135,7 +10926,7 @@ function openCustomizationModal() {
 
   // Chart Types Section
   modalHTML += '<div style="margin-bottom:1.5rem;">';
-  modalHTML += '<label style="font-weight:600;font-size:14px;color:var(--navy);display:block;margin-bottom:0.75rem;">🎨 CHART STYLE PREFERENCES</label>';
+  modalHTML += '<label style="font-weight:600;font-size:14px;color:var(--navy);display:block;margin-bottom:0.75rem;">' + svgIcon("sliders", 14) + ' CHART STYLE PREFERENCES</label>';
   modalHTML += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">';
 
   modalHTML += '<div>';
@@ -10174,7 +10965,7 @@ function openCustomizationModal() {
 
   // Date Range Section
   modalHTML += '<div style="margin-bottom:1rem;">';
-  modalHTML += '<label style="font-weight:600;font-size:14px;color:var(--navy);display:block;margin-bottom:0.75rem;">📅 DEFAULT DATE RANGE</label>';
+  modalHTML += '<label style="font-weight:600;font-size:14px;color:var(--navy);display:block;margin-bottom:0.75rem;">' + svgIcon("calendar", 14) + ' DEFAULT DATE RANGE</label>';
   modalHTML += '<div style="background:var(--pill);padding:1rem;border-radius:8px;display:flex;flex-direction:column;gap:0.6rem;">';
 
   modalHTML += '<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">';
@@ -10516,16 +11307,20 @@ function renderTrendChart() {
 
 function getStatusData() {
   var visibleDocs = getVisibleDocumentsForRole();
-  var approved = getDocumentCountByStatus(visibleDocs, "Approved");
-  var pending = getDocumentCountByStatus(visibleDocs, "For RD Approval");
-  var released = getDocumentCountByStatus(visibleDocs, "Released");
-  var clearance = getDocumentCountByStatus(visibleDocs, "For ARD Clearance");
+  var sent = getDocumentCountByStatus(visibleDocs, "Sent");
+  var acknowledged = getDocumentCountByStatus(visibleDocs, "Acknowledged");
+  var inProgress = getDocumentCountByStatus(visibleDocs, "In Progress");
+  var needsClarification = getDocumentCountByStatus(visibleDocs, "Needs Clarification");
+  var onHold = getDocumentCountByStatus(visibleDocs, "On Hold");
+  var done = getDocumentCountByStatus(visibleDocs, "Done");
 
   return [
-    { label: "Approved", value: approved, color: "#10b981" },
-    { label: "Pending", value: pending, color: "#f59e0b" },
-    { label: "Released", value: released, color: "#3b82f6" },
-    { label: "Clearance", value: clearance, color: "#8b5cf6" },
+    { label: "Sent", value: sent, color: "#3b82f6" },
+    { label: "Acknowledged", value: acknowledged, color: "#14b8a6" },
+    { label: "In Progress", value: inProgress, color: "#f59e0b" },
+    { label: "Needs Clarification", value: needsClarification, color: "#ef4444" },
+    { label: "On Hold", value: onHold, color: "#64748b" },
+    { label: "Done", value: done, color: "#10b981" },
   ];
 }
 
@@ -10673,7 +11468,7 @@ function renderLatestAnnouncementsList() {
       else if (ann.priority === "Normal") badgeClass = "pill-blue";
 
       var pinHtml = ann.pinned
-        ? '<span style="font-size:16px;flex-shrink:0;" title="Pinned">📌</span>'
+        ? '<span style="font-size:16px;flex-shrink:0;" title="Pinned">' + svgIcon("pin", 16) + '</span>'
         : '';
 
       h += '<div class="ann-widget-item" onclick="viewAnnouncementDetail(' + ann.id + ')">' +
@@ -10698,7 +11493,7 @@ function renderAnnouncementsPage() {
   var html = '';
   html += '<div class="page-toolbar" style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:0.75rem;align-items:center;margin-bottom:1rem;">';
   html += '<div style="flex:1;max-width:50%;min-width:260px;position:relative;">';
-  html += '<span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:14px;">🔍</span>';
+  html += '<span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:14px;">' + svgIcon("search", 14) + '</span>';
   html += '<input id="announcement-page-search-input" placeholder="Search Announcements by title..." oninput="renderAnnouncementsPageList(this.value)" style="width:100%;padding:0.75rem 1rem 0.75rem 2.5rem;border:1.5px solid var(--border);border-radius:10px;background:#fff;color:var(--text);font-size:14px;outline:none;" />';
   html += '</div>';
   html += '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;justify-content:flex-end;">';
@@ -10725,7 +11520,7 @@ function renderAnnouncementsPageList(query) {
   } else {
     h += '<div class="announcement-list">';
     sorted.forEach(function (ann) {
-      var pin = ann.pinned ? '<span class="ann-pin-icon" title="Pinned">📌</span>' : "";
+      var pin = ann.pinned ? '<span class="ann-pin-icon" title="Pinned">' + svgIcon("pin", 14) + '</span>' : "";
       var badgeClass = "pill-gray";
       if (ann.priority === "Urgent") badgeClass = "pill-red";
       else if (ann.priority === "Important") badgeClass = "pill-amber";
@@ -10828,7 +11623,7 @@ function viewAnnouncementDetail(id) {
   badgeContainer.innerHTML = '<span class="pill ' + badgeClass + '">' + escapeHtml(ann.priority) + '</span>';
 
   var pinnedContainer = document.getElementById("detail-ann-pinned-status");
-  pinnedContainer.textContent = ann.pinned ? "📌 Pinned Announcement" : "";
+  pinnedContainer.textContent = ann.pinned ? "Pinned Announcement" : "";
 
   // Open the detail modal
   document.getElementById("announcement-detail-modal").classList.add("open");

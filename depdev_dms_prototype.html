@@ -47,12 +47,12 @@
             DEPDev 7
           </h1>
           <h2 class="auth-branding-subtitle">
-            Document Management System
+            Document Record and Management System
           </h2>
           <div class="auth-branding-desc-wrap">
             <div class="auth-branding-line"></div>
             <p class="auth-branding-text">
-              Centralized Document Management System<br />
+              Centralized Document Record and Management System<br />
               for the Office of the Regional Director
             </p>
           </div>
@@ -61,39 +61,33 @@
         <!-- Right form area -->
         <div class="auth-form-wrap">
           <div class="auth-card">
-            <div class="auth-logo-wrap">
-              <img src="logo.png" alt="Logo" class="auth-logo" />
+            <!-- Logo Section -->
+            <div class="auth-logo-section">
+              <img src="logo.png" alt="DEPDev Logo" class="auth-logo" />
             </div>
-            <h2 class="auth-title">Welcome back!</h2>
-            <p class="auth-subtitle">Sign in with your email and password</p>
 
+            <!-- Welcome Section -->
+            <div class="auth-welcome-section">
+              <h2 class="auth-title">Welcome back!</h2>
+              <p class="auth-subtitle">Sign in to access the Document Record and Management System</p>
+            </div>
+
+            <!-- Login Form -->
             <form class="auth-form">
               <div class="auth-input-group">
-                <div class="auth-label-wrap">
-                  <label class="auth-label">EMAIL ADDRESS</label>
-                  <span class="auth-label-icon">✉️</span>
-                </div>
-                <input type="email" class="auth-input-line" id="login-email" value="harry@depdev7.gov.ph" />
+                <label class="auth-label" for="login-email">Email Address</label>
+                <input type="email" class="auth-input-line" id="login-email" value="harry@depdev7.gov.ph" placeholder="Enter your email" />
               </div>
 
               <div class="auth-input-group">
-                <div class="auth-label-wrap">
-                  <label class="auth-label">PASSWORD</label>
-                  <span class="auth-label-icon">🔒</span>
-                </div>
+                <label class="auth-label" for="login-pass">Password</label>
                 <div class="auth-input-wrap-line">
-                  <input type="password" class="auth-input-line" id="login-pass" value="password" />
+                  <input type="password" class="auth-input-line" id="login-pass" value="password" placeholder="Enter your password" />
                   <button type="button" class="auth-icon-btn-line" id="login-pass-toggle"
                     onclick="togglePasswordVisibility('login-pass', 'login-pass-toggle')" title="Show/Hide password">
-                    👁️
+                    <svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                   </button>
                 </div>
-              </div>
-
-              <div class="auth-row-end">
-                <button type="button" class="auth-text-btn" onclick="showScreen('screen-forgot-password')">
-                  Forgot password?
-                </button>
               </div>
 
               <button type="button" class="auth-submit" onclick="doLogin()">
@@ -101,181 +95,21 @@
               </button>
             </form>
 
-            <div class="auth-footer">
-              No account yet?
-              <button class="auth-link" onclick="showScreen('screen-signup')">
-                Create one
-              </button>
-            </div>
-
-            <div class="auth-demo">
-              <p class="auth-demo-text">Quick demo - sign in as:</p>
+            <!-- Demo Access Section -->
+            <div class="auth-demo-section">
+              <div class="auth-demo-header">
+                <span class="auth-demo-icon"><svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+                <span class="auth-demo-title">Prototype Demo Access</span>
+              </div>
               <div class="auth-demo-buttons">
-                <button class="auth-demo-btn" onclick="prepareLogin('admin')">
-                  Admin (Harry)
-                </button>
-                <button class="auth-demo-btn" onclick="prepareLogin('rd')">
-                  RD
-                </button>
-                <button class="auth-demo-btn" onclick="prepareLogin('ard')">
-                  ARD
-                </button>
-                <button class="auth-demo-btn" onclick="prepareLogin('dc')">
-                  Division Chief
-                </button>
-                <button class="auth-demo-btn" onclick="prepareLogin('custodian')">
-                  Custodian
-                </button>
-                <button class="auth-demo-btn" onclick="prepareLogin('staff')">
-                  Staff
-                </button>
-                <button class="auth-demo-btn" onclick="prepareLogin('supervisor')">
-                  Supervisor
-                </button>
+                <button class="auth-demo-btn" onclick="prepareLogin('admin')">Admin</button>
+                <button class="auth-demo-btn" onclick="prepareLogin('rd')">RD</button>
+                <button class="auth-demo-btn" onclick="prepareLogin('ard')">ARD</button>
+                <button class="auth-demo-btn" onclick="prepareLogin('dc')">Chief</button>
+                <button class="auth-demo-btn" onclick="prepareLogin('custodian')">Custodian</button>
+                <button class="auth-demo-btn" onclick="prepareLogin('staff')">Staff</button>
+                <button class="auth-demo-btn" onclick="prepareLogin('supervisor')">Supervisor</button>
               </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ===== SIGN UP SCREEN ===== -->
-  <div class="screen" id="screen-signup">
-    <div class="auth-page">
-      <div class="auth-bg"></div>
-      <div class="auth-overlay"></div>
-      <div class="auth-content" style="justify-content: center;">
-        <!-- Left branding removed to center the card -->
-
-        <div class="auth-form-wrap" style="margin: 0; max-width: 35rem; width: 100%;">
-          <div class="auth-card"
-            style="height: auto; max-height: 92vh; overflow-y: auto; padding: 2.5rem 2.5rem 2rem; justify-content: flex-start;">
-
-            <div class="auth-logo-wrap" style="margin-bottom: 1.5rem;">
-              <img src="logo.png" alt="Logo" class="auth-logo" />
-            </div>
-
-            <div style="text-align: center; margin-bottom: 1.5rem;">
-              <h2 class="auth-title"
-                style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 1.8rem; color: #214a9a; margin: 0 0 0.5rem; font-weight: 700;">
-                Create Account</h2>
-              <p class="auth-subtitle"
-                style="color: var(--muted); line-height: 1.4; font-size: 0.825rem; margin: 0; max-width: 28rem; margin-inline: auto;">
-                Fill in your details to register
-              </p>
-            </div>
-
-            <form class="auth-form">
-              <div class="auth-grid-2">
-                <div>
-                  <label class="auth-label">First Name</label>
-                  <div class="auth-input-wrap">
-                    <input type="text" class="auth-input with-left-icon" placeholder="Juan" id="signup-first-name" />
-                    <span class="auth-icon-left">👤</span>
-                  </div>
-                </div>
-                <div>
-                  <label class="auth-label">Last Name</label>
-                  <div class="auth-input-wrap">
-                    <input type="text" class="auth-input with-left-icon" placeholder="Dela Cruz"
-                      id="signup-last-name" />
-                    <span class="auth-icon-left">👤</span>
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label class="auth-label">Gmail Account</label>
-                <div class="auth-input-wrap">
-                  <input type="email" class="auth-input with-left-icon" placeholder="juan.delacruz@gmail.com"
-                    id="signup-email" />
-                  <span class="auth-icon-left">📧</span>
-                </div>
-              </div>
-
-              <div class="auth-grid-2">
-                <div>
-                  <label class="auth-label">Password</label>
-                  <div class="auth-input-wrap">
-                    <input type="password" class="auth-input with-left-icon with-right-icon" placeholder="⬢⬢⬢⬢⬢⬢⬢"
-                      id="signup-password" />
-                    <span class="auth-icon-left">🔒</span>
-                    <button type="button" class="auth-icon-btn" id="signup-pass-toggle"
-                      onclick="togglePasswordVisibility('signup-password', 'signup-pass-toggle')"
-                      title="Show/Hide password">
-                      👁️
-                    </button>
-                  </div>
-                </div>
-                <div>
-                  <label class="auth-label">Confirm Password</label>
-                  <div class="auth-input-wrap">
-                    <input type="password" class="auth-input with-left-icon with-right-icon" placeholder="⬢⬢⬢⬢⬢⬢⬢"
-                      id="signup-confirm-password" />
-                    <span class="auth-icon-left">🔒</span>
-                    <button type="button" class="auth-icon-btn" id="signup-confirm-pass-toggle"
-                      onclick="togglePasswordVisibility('signup-confirm-password', 'signup-confirm-pass-toggle')"
-                      title="Show/Hide password">
-                      👁️
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label class="auth-label">Role</label>
-                <div class="auth-input-wrap">
-                  <select class="auth-select with-left-icon" id="role-select" onchange="onRoleChange(this.value)">
-                    <option value="">- Select role -</option>
-                    <option value="admin">Admin</option>
-                    <option value="ard">ARD</option>
-                    <option value="oic">OIC</option>
-                    <option value="rd">RD</option>
-                    <option value="dc">Division Chief</option>
-                    <option value="supervisor">Supervisor</option>
-                    <option value="staff">Staff</option>
-                  </select>
-                  <span class="auth-icon-left"></span>
-                </div>
-              </div>
-
-              <div class="auth-division-box" id="div-select-box">
-                <p class="auth-division-title">Select your division</p>
-                <div class="auth-division-list">
-                  <label class="auth-division-item">
-                    <input type="radio" name="div" value="med" /> Monitoring
-                    and Evaluation Division
-                  </label>
-                  <label class="auth-division-item">
-                    <input type="radio" name="div" value="pfp" /> Policy
-                    Formulation and Planning Division
-                  </label>
-                  <label class="auth-division-item">
-                    <input type="radio" name="div" value="pdip" /> Project
-                    Development, Investment Programming and Budget Division
-                  </label>
-                  <label class="auth-division-item">
-                    <input type="radio" name="div" value="drd" /> Development
-                    and Research Division
-                  </label>
-                  <label class="auth-division-item">
-                    <input type="radio" name="div" value="fad" /> Finance and
-                    Administrative Division
-                  </label>
-                </div>
-              </div>
-
-              <button type="button" class="auth-submit" onclick="doSignup()">
-                Create Account
-              </button>
-            </form>
-
-            <div class="auth-footer">
-              Already have an account?
-              <button class="auth-link" onclick="showScreen('screen-signin')">
-                Sign in
-              </button>
             </div>
           </div>
         </div>
@@ -340,7 +174,7 @@
               <div class="auth-input-group">
                 <div class="auth-label-wrap">
                   <label class="auth-label">EMAIL ADDRESS</label>
-                  <span class="auth-label-icon">✉️</span>
+                  <span class="auth-label-icon"><svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg></span>
                 </div>
                 <input type="email" class="auth-input-line" id="forgot-email" placeholder="your.email@depdev7.gov.ph" />
               </div>
@@ -373,7 +207,7 @@
                 " />
             <span class="sb-logo-fallback">DMS</span>
           </div>
-          <div class="sb-logo-name"><span>Document Management</span><span>System</span></div>
+          <div class="sb-logo-name"><span>Document Record and</span><span>Management System</span></div>
         </div>
         <div class="sb-user">
           <div class="sb-avatar" id="sb-avatar">H</div>
@@ -385,7 +219,11 @@
         <div class="sb-nav" id="sb-nav">
           <!-- injected by JS -->
         </div>
-        <button class="sidebar-toggle-btn" id="hamburger-btn" onclick="toggleSidebar()" aria-label="Toggle Sidebar">
+        <!-- Sign out: rendered unconditionally at the bottom for every role (not part of getNav filtering) -->
+        <div class="sb-logout" id="nav-signout" onclick="doLogout()" title="Sign out" data-tooltip="Sign out">
+          <span class="sb-icon"><svg class="icn" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></span><span class="sb-logout-text">Sign out</span>
+        </div>
+        <button class="sidebar-toggle-btn" onclick="toggleSidebar()" aria-label="Toggle Sidebar">
           <span class="sidebar-arrow">&#x276E;</span>
         </button>
       </div>
@@ -394,22 +232,26 @@
       <!-- MAIN -->
       <div class="main">
         <div class="topbar">
+          <button class="hamburger-btn" id="hamburger-btn" onclick="toggleSidebar()" aria-label="Open menu">
+            <span></span><span></span><span></span>
+          </button>
           <div class="topbar-brand">
             <img src="logo.png" alt="DMS Logo" class="topbar-logo" />
           </div>
           <div class="topbar-right">
             <div class="topbar-nav-link" onclick="toggleNotif()" aria-label="Notifications">
-              <span style="font-size: 1.1em; margin-right: 6px;">🔔</span> Notifications
-              <div class="notif-dot"></div>
+              <span class="topbar-icn"><svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></span> Notifications
+              <div class="notif-dot" id="notif-badge-dot" style="display:none;"></div>
+              <span id="notif-badge-count" style="display:none;background:var(--danger);color:white;border-radius:10px;padding:2px 8px;font-size:11px;font-weight:600;margin-left:6px;"></span>
             </div>
-            <div class="topbar-nav-link" onclick="openUploadDocumentModal()" aria-label="Upload Document">
-              <span style="font-size: 1.1em; margin-right: 6px;">📤</span> Upload Document
+            <div class="topbar-nav-link" onclick="openRegisterDocumentChoice()" aria-label="Register Document">
+              <span class="topbar-icn"><svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg></span> Register Document
             </div>
             <div class="topbar-nav-link" onclick="openCompose()" aria-label="Send Document">
-              <span style="font-size: 1.1em; margin-right: 6px;">✉️</span> Send Document
+              <span class="topbar-icn"><svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></span> Send Document
             </div>
             <div class="topbar-nav-link" onclick="openAccountSettings()" aria-label="Settings">
-              <span style="font-size: 1.1em; margin-right: 6px;">⚙️</span> Settings
+              <span class="topbar-icn"><svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span> Settings
             </div>
             <!-- NOTIF PANEL -->
             <div class="notif-panel" id="notif-panel">
@@ -431,6 +273,37 @@
   <input type="file" id="ocr-upload-input" style="display: none" accept="image/*,application/pdf"
     onchange="handleOCRUpload(this)" />
 
+  <!-- REGISTER DOCUMENT CHOICE MODAL -->
+  <div class="modal-overlay" id="register-choice-modal">
+    <div class="modal" style="max-width: 540px;">
+      <div class="modal-head">
+        <h3>Register Document</h3>
+        <span class="modal-close" onclick="closeRegisterChoice()">✕</span>
+      </div>
+      <div class="modal-body">
+        <p style="margin-bottom:1.5rem;color:var(--muted);line-height:1.6">
+          What would you like to register?
+        </p>
+        <div style="display:grid;gap:1rem;">
+          <div class="register-choice-card" onclick="chooseRegisterFile()">
+            <div class="register-choice-icon"><svg class="icn" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg></div>
+            <div class="register-choice-content">
+              <div class="register-choice-title">Register File</div>
+              <div class="register-choice-desc">Upload a PDF, Word document, spreadsheet, or other supported document file.</div>
+            </div>
+          </div>
+          <div class="register-choice-card" onclick="chooseRegisterEmail()">
+            <div class="register-choice-icon"><svg class="icn" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg></div>
+            <div class="register-choice-content">
+              <div class="register-choice-title">Register Email</div>
+              <div class="register-choice-desc">Paste an email or text communication directly from Outlook or another source.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- UPLOAD DOCUMENT MODAL -->
   <div class="modal-overlay" id="upload-document-modal">
     <div class="modal" style="max-width: 760px;">
@@ -447,6 +320,7 @@
               <option value="Letter">Letter</option>
               <option value="Endorsement">Endorsement</option>
               <option value="Report">Report</option>
+              <option value="Email Communication">Email Communication</option>
               <option value="Bill / Financial">Bill / Financial</option>
               <option value="Other">Other</option>
             </select>
@@ -476,24 +350,14 @@
               <input id="upload-document-date" type="date" />
             </div>
           </div>
-          <div class="form-row" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;">
-            <div class="field">
-              <label>Confidentiality Level</label>
-              <select id="upload-document-confidentiality">
-                <option value="Internal">Internal</option>
-                <option value="Confidential">Confidential</option>
-                <option value="Restricted">Restricted</option>
-                <option value="Public">Public</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>Priority</label>
-              <select id="upload-document-priority">
-                <option value="Normal">Normal</option>
-                <option value="High">High</option>
-                <option value="Urgent">Urgent</option>
-              </select>
-            </div>
+          <div class="field">
+            <label>Confidentiality Level</label>
+            <select id="upload-document-confidentiality">
+              <option value="Internal">Internal</option>
+              <option value="Confidential">Confidential</option>
+              <option value="Restricted">Restricted</option>
+              <option value="Public">Public</option>
+            </select>
           </div>
           <div class="form-row" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;">
             <div class="field">
@@ -511,7 +375,7 @@
           </div>
           <input type="file" id="upload-document-file-input" style="display:none" onchange="handleUploadDocumentFile(this)" />
           <div class="attach-zone" onclick="document.getElementById('upload-document-file-input').click()">
-            📎 <strong>Upload file</strong> - select the document to store in the repository<br />
+            <svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg> <strong>Upload file</strong> - select the document to store in the repository<br />
             <span style="font-size: 12px">PDF, DOCX, XLSX, JPG, PNG and other supported files</span>
           </div>
           <div id="upload-document-file-list" class="attachment-list"></div>
@@ -520,6 +384,103 @@
       <div class="modal-footer">
         <button class="btn-sec" onclick="closeUploadDocumentModal()">Cancel</button>
         <button class="btn-send" onclick="submitUploadDocument()">Upload Document</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- REGISTER EMAIL MODAL -->
+  <div class="modal-overlay" id="register-email-modal">
+    <div class="modal" style="max-width: 860px;">
+      <div class="modal-head">
+        <h3><svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg> Register Email Communication</h3>
+        <span class="modal-close" onclick="closeRegisterEmail()">✕</span>
+      </div>
+      <div class="modal-body">
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:0.7rem 1rem;margin-bottom:1.25rem;font-size:12.5px;color:#1e40af;line-height:1.5;">
+          <strong><svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg> Tip:</strong> Copy the email content from Outlook and paste it below. The system will register it as an official document record.
+        </div>
+        <div class="compose-wrap">
+
+          <!-- EMAIL HEADER INFORMATION -->
+          <div style="background:#f9fafb;border:1px solid var(--border);border-radius:8px;padding:1.25rem;margin-bottom:1.25rem;">
+            <div style="font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:1rem;">Email Information</div>
+            <div class="form-row" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;margin-bottom:1rem;">
+              <div class="field" style="margin-bottom:0;">
+                <label style="font-size:12px;margin-bottom:0.35rem;">From (Sender)</label>
+                <input id="register-email-from" placeholder="sender@example.com" style="font-size:13px;" />
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label style="font-size:12px;margin-bottom:0.35rem;">To (Recipient)</label>
+                <input id="register-email-to" placeholder="recipient@example.com" style="font-size:13px;" />
+              </div>
+            </div>
+            <div class="form-row" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;">
+              <div class="field" style="margin-bottom:0;">
+                <label style="font-size:12px;margin-bottom:0.35rem;">CC (Optional)</label>
+                <input id="register-email-cc" placeholder="cc@example.com" style="font-size:13px;" />
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label style="font-size:12px;margin-bottom:0.35rem;">Date</label>
+                <input id="register-email-date" type="date" style="font-size:13px;" />
+              </div>
+            </div>
+          </div>
+
+          <!-- EMAIL CONTENT (Subject + Body - visually connected) -->
+          <div style="background:#ffffff;border:1px solid var(--border);border-radius:8px;padding:1.25rem;margin-bottom:1.25rem;">
+            <div style="font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:0.75rem;">Email Content</div>
+            <div class="field" style="margin-bottom:0.75rem;">
+              <label style="font-size:12px;margin-bottom:0.35rem;">Subject <span style="color:var(--danger)">*</span></label>
+              <input id="register-email-subject" placeholder="Enter the email subject line" style="font-size:14px;font-weight:500;" />
+            </div>
+            <div class="field" style="margin-bottom:0;">
+              <label style="font-size:12px;margin-bottom:0.35rem;">Email Body <span style="color:var(--danger)">*</span></label>
+              <textarea id="register-email-body" placeholder="Paste the email content here...
+
+You can paste the entire email body. The system will preserve line breaks and formatting." style="min-height:260px;font-family:'Courier New',monospace;font-size:13px;line-height:1.6;border:1px solid #d1d5db;border-radius:6px;"></textarea>
+            </div>
+          </div>
+
+          <!-- DOCUMENT INFORMATION (DRMS Metadata) -->
+          <div style="border-top:2px solid var(--border);padding-top:1.25rem;">
+            <div style="font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:1rem;">Document Information</div>
+            <div class="field">
+              <label>Document Type</label>
+              <input value="Email Communication" readonly style="background:#f9fafb;cursor:not-allowed;color:#6b7280;" />
+            </div>
+            <div class="form-row" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;">
+              <div class="field">
+                <label>Reference Number</label>
+                <input id="register-email-ref" placeholder="Auto-generated" readonly style="background:#f9fafb;cursor:not-allowed;color:#6b7280;" />
+              </div>
+              <div class="field">
+                <label>Document Category</label>
+                <select id="register-email-category">
+                  <option value="Administrative">Administrative</option>
+                  <option value="Operations">Operations</option>
+                  <option value="Financial">Financial</option>
+                  <option value="Planning">Planning</option>
+                  <option value="Monitoring and Evaluation">Monitoring and Evaluation</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+            </div>
+            <div class="field">
+              <label>Confidentiality Level</label>
+              <select id="register-email-confidentiality">
+                <option value="Internal">Internal</option>
+                <option value="Confidential">Confidential</option>
+                <option value="Restricted">Restricted</option>
+                <option value="Public">Public</option>
+              </select>
+            </div>
+          </div>
+
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-sec" onclick="closeRegisterEmail()">Cancel</button>
+        <button class="btn-send" onclick="submitRegisterEmail()">Register Email</button>
       </div>
     </div>
   </div>
@@ -554,8 +515,8 @@
             <div id="route-document-summary-text" style="font-weight:700; color:var(--navy); font-size:14px; margin-bottom:0.5rem;"></div>
             <div id="route-document-meta" style="font-size:12px; color:var(--muted); display:flex; gap:1.25rem; flex-wrap:wrap;"></div>
             <div style="display:flex; gap:0.5rem; margin-top:0.75rem;">
-              <button class="btn-sm" id="route-doc-view-btn" onclick="" style="display:none;">👁 View</button>
-              <button class="btn-sm" id="route-doc-download-btn" onclick="" style="display:none;">⬇ Download</button>
+              <button class="btn-sm" id="route-doc-view-btn" onclick="" style="display:none;"><svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> View</button>
+              <button class="btn-sm" id="route-doc-download-btn" onclick="" style="display:none;"><svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Download</button>
               <span id="route-doc-version-badge" style="display:none;"></span>
             </div>
           </div>
@@ -590,23 +551,38 @@
               <input id="compose-deadline" type="date" />
             </div>
             <div class="field">
-              <label>Priority</label>
+              <label>Priority Level <span style="color:var(--danger)">*</span></label>
               <select id="compose-priority">
-                <option value="Normal">Normal</option>
+                <option value="Low">Low</option>
+                <option value="Normal" selected>Normal</option>
                 <option value="High">High</option>
                 <option value="Urgent">Urgent</option>
               </select>
             </div>
           </div>
 
+          <!-- Document Direction Field -->
           <div class="field">
-            <label>Instructions for Recipient</label>
-            <textarea id="compose-remarks" class="compose-body" style="border:1.5px solid var(--border);border-radius:8px;padding:0.6rem;width:100%;min-height:80px;font-family:var(--font);font-size:14px;outline:none;" placeholder="Instructions for the recipient (e.g. For signature, For information, For appropriate action)…"></textarea>
+            <label>Document Direction <span style="color:var(--danger)">*</span></label>
+            <div style="display:flex;gap:1.5rem;margin-top:0.5rem;">
+              <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-weight:500;">
+                <input type="radio" name="compose-direction" value="incoming" style="width:18px;height:18px;" />
+                <span style="font-size:14px;">Incoming</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-weight:500;">
+                <input type="radio" name="compose-direction" value="outgoing" style="width:18px;height:18px;" checked />
+                <span style="font-size:14px;">Outgoing</span>
+              </label>
+            </div>
+            <div style="font-size:12px;color:var(--muted);margin-top:0.5rem;">
+              <span id="incoming-hint" style="display:none;"><svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg> Incoming: Document originated from outside the organization</span>
+              <span id="outgoing-hint" style="display:inline;"><svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Outgoing: Document originated from within the organization</span>
+            </div>
           </div>
 
           <div class="field">
-            <label>Remarks / Notes</label>
-            <textarea id="compose-remarks-extra" class="compose-body" style="border:1.5px solid var(--border);border-radius:8px;padding:0.6rem;width:100%;min-height:70px;font-family:var(--font);font-size:14px;outline:none;" placeholder="Additional remarks or routing notes…"></textarea>
+            <label>Instruction</label>
+            <textarea id="compose-instruction" class="compose-body" style="border:1.5px solid var(--border);border-radius:8px;padding:0.6rem;width:100%;min-height:100px;font-family:var(--font);font-size:14px;outline:none;" placeholder="Enter your instruction for the recipient (e.g. For signature, For information, For appropriate action)…"></textarea>
           </div>
 
           <!-- Hidden legacy fields kept for JS compatibility -->
@@ -619,7 +595,7 @@
       </div>
       <div class="modal-footer">
         <button class="btn-sec" onclick="closeCompose()" aria-label="Cancel">Cancel</button>
-        <button class="btn-send" onclick="sendDoc()" aria-label="Send Document">Send Document ↗</button>
+        <button class="btn-send" onclick="sendDoc()" aria-label="Send Document">Send Document <svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="margin-left:6px"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
       </div>
     </div>
   </div>
@@ -671,10 +647,12 @@
           <div class="field">
             <label>Status</label>
             <select id="manual-status">
-              <option value="For ARD Clearance">For ARD Clearance</option>
-              <option value="For RD Approval">For RD Approval</option>
-              <option value="Approved">Approved</option>
-              <option value="Released">Released</option>
+              <option value="Sent">Sent</option>
+              <option value="Acknowledged">Acknowledged</option>
+              <option value="In Progress">In Progress</option>
+              <option value="Needs Clarification">Needs Clarification</option>
+              <option value="On Hold">On Hold</option>
+              <option value="Done">Done</option>
             </select>
           </div>
           <div class="field">
@@ -785,7 +763,7 @@
             border-bottom: none;
           ">
         <h3 style="margin: 0; display: flex; align-items: center; gap: 0.75rem">
-          <span style="font-size: 1.5rem">📄</span>
+          <span style="font-size: 1.5rem"><svg class="icn" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg></span>
           Advanced OCR Scanner
         </h3>
         <span class="modal-close" onclick="closeOCRScanner()" aria-label="Close"
@@ -829,7 +807,7 @@
                         align-items: center;
                         gap: 0.25rem;
                       ">
-                    <span style="font-size: 14px">🔄</span> Refresh
+                    <span style="font-size: 14px"><svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></span> Refresh
                   </button>
                 </div>
                 <div id="scanner-status" style="margin-bottom: 1rem">
@@ -966,7 +944,7 @@
                     font-size: 15px;
                     box-shadow: 0 4px 12px rgba(0, 48, 96, 0.2);
                   ">
-                <span style="font-size: 20px">📷</span> Start Scanning
+                <span style="font-size: 20px"><svg class="icn" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></span> Start Scanning
               </button>
             </div>
           </div>
@@ -1019,7 +997,7 @@
                     min-height: 300px;
                   ">
                 <div style="text-align: center; opacity: 0.4">
-                  <div style="font-size: 60px; margin-bottom: 1rem">📑</div>
+                  <div style="font-size: 60px; margin-bottom: 1rem"><svg class="icn" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg></div>
                   <div style="font-weight: 600; color: var(--navy)">
                     Waiting for scan...
                   </div>
@@ -1065,10 +1043,10 @@
                         ">Extracted Text</label>
                     <div style="display: flex; gap: 0.5rem">
                       <button class="btn-sm" onclick="copyOCRText()" style="font-size: 10px; padding: 0.25rem 0.5rem">
-                        📋 Copy
+                        <svg class="icn" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg> Copy
                       </button>
                       <button class="btn-sm" onclick="editOCRText()" style="font-size: 10px; padding: 0.25rem 0.5rem">
-                        ✏️ Edit
+                        <svg class="icn" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg> Edit
                       </button>
                     </div>
                   </div>
@@ -1326,7 +1304,7 @@
               align-items: center;
               gap: 0.5rem;
             ">
-          🔄 Refresh
+          <svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Refresh
         </button>
       </div>
     </div>
@@ -1346,14 +1324,30 @@
             <input id="quick-send-to" list="compose-recipient-list" placeholder="Recipient name, role, or email..."
               aria-label="Recipient" />
           </div>
+          
+          <!-- Document Direction Field -->
           <div class="field">
-            <label>Instructions for Recipient</label>
-            <textarea id="quick-send-remarks" class="compose-body" style="
+            <label>Document Direction <span style="color:var(--danger)">*</span></label>
+            <div style="display:flex;gap:1.5rem;margin-top:0.5rem;">
+              <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-weight:500;">
+                <input type="radio" name="quick-send-direction" value="incoming" style="width:18px;height:18px;" />
+                <span style="font-size:14px;">Incoming</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-weight:500;">
+                <input type="radio" name="quick-send-direction" value="outgoing" style="width:18px;height:18px;" checked />
+                <span style="font-size:14px;">Outgoing</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Instruction</label>
+            <textarea id="quick-send-instruction" class="compose-body" style="
                   border: 1.5px solid var(--border);
                   border-radius: 8px;
                   padding: 0.6rem;
-                  width: 100%;" min-height: 90px; font-family: var(--font); font-size: 14px; outline:
-              none; " placeholder="Add instructions for the recipient..."></textarea>
+                  width: 100%;" min-height: 100px; font-family: var(--font); font-size: 14px; outline:
+              none; " placeholder="Enter your instruction for the recipient..."></textarea>
           </div>
           <div class="field">
             <label>Outlook Email Content</label>
@@ -1379,7 +1373,7 @@
           Cancel
         </button>
         <button class="btn-send" onclick="submitQuickSend()" aria-label="Send Document">
-          Send Document ↗
+          Send Document <svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="margin-left:6px"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
         </button>
       </div>
     </div>
@@ -1437,7 +1431,7 @@
           </div>
           <input type="file" id="version-file-input" style="display:none" onchange="handleVersionFile(this)" />
           <div class="attach-zone" onclick="document.getElementById('version-file-input').click()">
-            📎 <strong>Upload revised file</strong> — select the new version of the document<br />
+            <svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg> <strong>Upload revised file</strong> — select the new version of the document<br />
             <span style="font-size:12px">PDF, DOCX, XLSX, JPG, PNG and other supported files</span>
           </div>
           <div id="version-file-list" class="attachment-list"></div>
@@ -1553,7 +1547,7 @@
   <div class="modal-overlay" id="create-announcement-modal">
     <div class="modal" style="max-width: 520px">
       <div class="modal-head">
-        <h3>📌 Create Official Announcement</h3>
+        <h3><svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg> Create Official Announcement</h3>
         <span class="modal-close" onclick="closeCreateAnnouncementModal()">✕</span>
       </div>
       <div class="modal-body">
