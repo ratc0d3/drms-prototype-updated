@@ -19,6 +19,24 @@ const announcements = [
     priority: "Normal",
     pinned: false,
     datePosted: "2026-06-12"
+  },
+  {
+    id: 3,
+    title: "FY 2026 Q3 M&E Submission Deadline",
+    content: "All Division Chiefs and Unit Heads are reminded to submit Q3 accomplishment reports on or before September 15, 2026.",
+    postedBy: "Monitoring and Evaluation Division",
+    priority: "Urgent",
+    pinned: true,
+    datePosted: "2026-09-01"
+  },
+  {
+    id: 4,
+    title: "Updated Inter-Division Routing Guidelines",
+    content: "Revised standards for document transmittals, physical logbook receipts, and digital signature verifications are now active.",
+    postedBy: "Assistant Regional Director",
+    priority: "Important",
+    pinned: false,
+    datePosted: "2026-09-03"
   }
 ];
 var REF_COUNTER_BY_MONTH = {};
@@ -460,6 +478,81 @@ function isValidNotification(notification) {
   );
 }
 
+var DEFAULT_NOTIFICATIONS = [
+  {
+    recipientKey: "ana@depdev7.gov.ph",
+    type: "document_received",
+    documentId: "DEP-2026-08-0010",
+    title: "New Incoming Document",
+    message: "Chief Reyes routed 'Q3 Field Verification Guidelines for Regional Projects' to you.",
+    timestamp: "2026-08-10T09:00:00Z",
+    read: false
+  },
+  {
+    recipientKey: "ana@depdev7.gov.ph",
+    type: "document_received",
+    documentId: "DEP-2026-08-0025",
+    title: "Task Directive Assigned",
+    message: "Supervisor Jose assigned 'Region VII Infrastructure Inspection Audit' directive to you.",
+    timestamp: "2026-08-15T11:30:00Z",
+    read: false
+  },
+  {
+    recipientKey: "jose@depdev7.gov.ph",
+    type: "document_received",
+    documentId: "DEP-2026-08-0015",
+    title: "Endorsement Clearance Pending",
+    message: "Staff Ana submitted 'Field Inspection Clearance — Negros Oriental Solar Grid' for endorsement.",
+    timestamp: "2026-08-12T13:20:00Z",
+    read: false
+  },
+  {
+    recipientKey: "reyes@depdev7.gov.ph",
+    type: "document_received",
+    documentId: "DEP-2026-08-0040",
+    title: "Compliance Matrix Submitted",
+    message: "Staff Ana uploaded 'Mid-Year Regional Monitoring Compliance Matrix' for division review.",
+    timestamp: "2026-08-22T10:45:00Z",
+    read: false
+  },
+  {
+    recipientKey: "clara@depdev7.gov.ph",
+    type: "document_received",
+    documentId: "DEP-2026-08-0030",
+    title: "Archival Transmittal Received",
+    message: "Sir Harry transmitted 'Archival Filing Transmittal: 2024 FAD Official Contracts' for cataloging.",
+    timestamp: "2026-08-18T14:30:00Z",
+    read: false
+  },
+  {
+    recipientKey: "mark@depdev7.gov.ph",
+    type: "document_received",
+    documentId: "DEP-2026-05-0006",
+    title: "Executive Endorsement Review",
+    message: "Chief Reyes submitted 'Project Proposal Review Request — Policy Plan' for executive clearance.",
+    timestamp: "2026-05-14T14:20:00Z",
+    read: false
+  },
+  {
+    recipientKey: "rdjen@depdev7.gov.ph",
+    type: "document_received",
+    documentId: "DEP-2026-05-0005",
+    title: "External Correspondence Received",
+    message: "External Partner transmitted 'Invitation: Regional Development & Planning Summit' to RD Office.",
+    timestamp: "2026-05-14T13:45:00Z",
+    read: false
+  },
+  {
+    recipientKey: "harry@depdev7.gov.ph",
+    type: "document_received",
+    documentId: "DEP-2026-09-0004",
+    title: "Monthly Archival Summary Received",
+    message: "Clara Custodian submitted 'Monthly Document Archival and Records Clearance Log'.",
+    timestamp: "2026-09-04T10:00:00Z",
+    read: false
+  }
+];
+
 function loadNotifications() {
   NOTIFICATIONS = [];
   try {
@@ -471,14 +564,15 @@ function loadNotifications() {
           NOTIFICATIONS = parsed.filter(function (n) {
             return isValidNotification(n);
           });
-          if (NOTIFICATIONS.length !== parsed.length) {
-            saveNotifications();
-          }
         }
       }
     }
   } catch (e) {
     NOTIFICATIONS = [];
+  }
+  if (NOTIFICATIONS.length === 0) {
+    NOTIFICATIONS = DEFAULT_NOTIFICATIONS.slice();
+    saveNotifications();
   }
 }
 
@@ -599,6 +693,29 @@ function loadDocumentRatings() {
     }
   } catch (e) {
     DOC_RATINGS = {};
+  }
+  if (Object.keys(DOC_RATINGS).length === 0) {
+    DOC_RATINGS = {
+      "2026-05-002": {
+        rating: 5,
+        comment: "Excellently structured report with clear metric breakdowns and valid field data.",
+        ratedBy: "Chief Reyes",
+        date: "2026-05-15"
+      },
+      "DEP-2026-08-0040": {
+        rating: 4,
+        comment: "Thorough compliance matrix. Clear progress indicators across all 14 infrastructure projects.",
+        ratedBy: "Chief Reyes",
+        date: "2026-08-23"
+      },
+      "2026-05-001": {
+        rating: 5,
+        comment: "Comprehensive division performance targets alignment for CY 2026.",
+        ratedBy: "Dir. RDJEN",
+        date: "2026-05-16"
+      }
+    };
+    saveDocumentRatings();
   }
 }
 
@@ -1618,12 +1735,318 @@ var USERS = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 var DOCS_DEFAULT = [
+  // -------------------------------------------------------------
+  // STAFF ANA (MED) DOCUMENTS - INCOMING & OUTGOING/SUBMITTED
+  // -------------------------------------------------------------
+  {
+    ref: "DEP-2026-08-0010",
+    type: "Memorandum",
+    category: "Monitoring and Evaluation",
+    from: "Chief Reyes",
+    senderName: "Chief Reyes",
+    senderEmail: "reyes@depdev7.gov.ph",
+    to: "Staff Ana",
+    recipientName: "Staff Ana",
+    recipientEmail: "ana@depdev7.gov.ph",
+    subject: "Q3 Field Verification Guidelines for Regional Projects",
+    status: "In Progress",
+    date: "2026-08-10",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "High",
+    source: "Monitoring and Evaluation Division",
+    description: "Technical instructions for conducting Q3 site visits across Cebu and Bohol infrastructure projects.",
+    uploadedBy: "Chief Reyes",
+    kind: "incoming",
+    direction: "incoming",
+    origin: "Intake Counter",
+    physicalLocation: "Desk of Staff Ana (MED)",
+    physicalStatus: "Received at Desk",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Chief Reyes", date: "2026-08-10", note: "Initial transmittal" }],
+    tracking: { lastActor: "dc", lastUpdated: "2026-08-10T09:00:00Z" }
+  },
+  {
+    ref: "DEP-2026-08-0025",
+    type: "Directive",
+    category: "Operations",
+    from: "Supervisor Jose",
+    senderName: "Supervisor Jose",
+    senderEmail: "jose@depdev7.gov.ph",
+    to: "Staff Ana",
+    recipientName: "Staff Ana",
+    recipientEmail: "ana@depdev7.gov.ph",
+    subject: "Assignment: Region VII Infrastructure Inspection Audit",
+    status: "Acknowledged",
+    date: "2026-08-15",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Monitoring and Evaluation Division",
+    division: "Monitoring and Evaluation Division",
+    description: "Formal assignment directive to conduct field audits for 4 provincial road projects.",
+    uploadedBy: "Supervisor Jose",
+    kind: "incoming",
+    direction: "incoming",
+    origin: "Intake Counter",
+    physicalLocation: "Desk of Staff Ana (MED)",
+    physicalStatus: "Received at Desk",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Supervisor Jose", date: "2026-08-15", note: "Direct assignment" }],
+    tracking: { lastActor: "supervisor", lastUpdated: "2026-08-15T11:30:00Z" }
+  },
+  {
+    ref: "DEP-2026-09-0002",
+    type: "Letter",
+    category: "Operations",
+    from: "ARD Mark",
+    senderName: "ARD Mark",
+    senderEmail: "mark@depdev7.gov.ph",
+    to: "Staff Ana",
+    recipientName: "Staff Ana",
+    recipientEmail: "ana@depdev7.gov.ph",
+    subject: "Request for Draft Monitoring Data on Cebu Coastal Bypass Project",
+    status: "Pending",
+    date: "2026-09-02",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Urgent",
+    source: "Office of the Regional Director",
+    division: "Monitoring and Evaluation Division",
+    description: "Urgent request for preliminary progress figures for the upcoming RDC briefing.",
+    uploadedBy: "ARD Mark",
+    kind: "incoming",
+    direction: "incoming",
+    origin: "Intake Counter",
+    physicalLocation: "Desk of Staff Ana (MED)",
+    physicalStatus: "Received at Desk",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "ARD Mark", date: "2026-09-02", note: "Priority memo" }],
+    tracking: { lastActor: "ard", lastUpdated: "2026-09-02T14:10:00Z" }
+  },
+  {
+    ref: "DEP-2026-05-0002",
+    type: "Report",
+    category: "Monitoring and Evaluation",
+    from: "Staff Ana",
+    senderName: "Staff Ana",
+    senderEmail: "ana@depdev7.gov.ph",
+    to: "Supervisor Jose",
+    recipientName: "Supervisor Jose",
+    recipientEmail: "jose@depdev7.gov.ph",
+    subject: "Weekly Accomplishment Report — MED Q2",
+    status: "Done",
+    date: "2026-05-14",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Monitoring and Evaluation Division",
+    division: "Monitoring and Evaluation Division",
+    description: "Weekly accomplishment report covering regional monitoring milestones.",
+    uploadedBy: "Staff Ana",
+    kind: "outgoing",
+    direction: "outgoing",
+    origin: "Staff Direct Upload",
+    physicalLocation: "Cabinet 2B - MED Files",
+    physicalStatus: "Filed in Cabinet",
+    version: 2,
+    versionHistory: [
+      { version: 1, uploadedBy: "Staff Ana", date: "2026-05-07", note: "Initial submission" },
+      { version: 2, uploadedBy: "Staff Ana", date: "2026-05-14", note: "Final validated edition" }
+    ],
+    tracking: { lastActor: "staff", lastUpdated: "2026-05-14T16:00:00Z" }
+  },
+  {
+    ref: "DEP-2026-08-0040",
+    type: "Report",
+    category: "Technical",
+    from: "Staff Ana",
+    senderName: "Staff Ana",
+    senderEmail: "ana@depdev7.gov.ph",
+    to: "Chief Reyes",
+    recipientName: "Chief Reyes",
+    recipientEmail: "reyes@depdev7.gov.ph",
+    subject: "Mid-Year Regional Monitoring Compliance Matrix",
+    status: "In Progress",
+    date: "2026-08-22",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "High",
+    source: "Monitoring and Evaluation Division",
+    division: "Monitoring and Evaluation Division",
+    description: "Comprehensive mid-year progress matrix detailing key performance metrics of all 14 major LGU infrastructure projects.",
+    uploadedBy: "Staff Ana",
+    kind: "outgoing",
+    direction: "outgoing",
+    origin: "Staff Direct Upload",
+    physicalLocation: "Desk of Chief Reyes (FAD)",
+    physicalStatus: "Received at Desk",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Staff Ana", date: "2026-08-22", note: "Submitted for chief approval" }],
+    tracking: { lastActor: "staff", lastUpdated: "2026-08-22T10:45:00Z" }
+  },
+  {
+    ref: "DEP-2026-09-0005",
+    type: "Endorsement",
+    category: "Operations",
+    from: "Staff Ana",
+    senderName: "Staff Ana",
+    senderEmail: "ana@depdev7.gov.ph",
+    to: "Supervisor Jose",
+    recipientName: "Supervisor Jose",
+    recipientEmail: "jose@depdev7.gov.ph",
+    subject: "Project Completion Verification Certificate — Bohol Waterway",
+    status: "Sent",
+    date: "2026-09-05",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Monitoring and Evaluation Division",
+    division: "Monitoring and Evaluation Division",
+    description: "Endorsement document certifying completion of Bohol municipal irrigation and waterway phase 1.",
+    uploadedBy: "Staff Ana",
+    kind: "outgoing",
+    direction: "outgoing",
+    origin: "Staff Direct Upload",
+    physicalLocation: "Desk of Supervisor Jose (MED)",
+    physicalStatus: "Received at Desk",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Staff Ana", date: "2026-09-05", note: "Initial endorsement" }],
+    tracking: { lastActor: "staff", lastUpdated: "2026-09-05T08:30:00Z" }
+  },
+
+  // -------------------------------------------------------------
+  // SUPERVISOR JOSE (MED) DOCUMENTS
+  // -------------------------------------------------------------
+  {
+    ref: "DEP-2026-08-0015",
+    type: "Endorsement",
+    category: "Operations",
+    from: "Staff Ana",
+    senderName: "Staff Ana",
+    senderEmail: "ana@depdev7.gov.ph",
+    to: "Supervisor Jose",
+    recipientName: "Supervisor Jose",
+    recipientEmail: "jose@depdev7.gov.ph",
+    subject: "Field Inspection Clearance — Negros Oriental Solar Grid",
+    status: "In Progress",
+    date: "2026-08-12",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "High",
+    source: "Monitoring and Evaluation Division",
+    division: "Monitoring and Evaluation Division",
+    description: "Clearance application following onsite inspection of renewable energy installation.",
+    uploadedBy: "Staff Ana",
+    kind: "incoming",
+    direction: "incoming",
+    origin: "Intake Counter",
+    physicalLocation: "Desk of Supervisor Jose (MED)",
+    physicalStatus: "Received at Desk",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Staff Ana", date: "2026-08-12", note: "For supervisor clearance" }],
+    tracking: { lastActor: "staff", lastUpdated: "2026-08-12T13:20:00Z" }
+  },
+  {
+    ref: "DEP-2026-08-0050",
+    type: "Memorandum",
+    category: "Administrative",
+    from: "Chief Reyes",
+    senderName: "Chief Reyes",
+    senderEmail: "reyes@depdev7.gov.ph",
+    to: "Supervisor Jose",
+    recipientName: "Supervisor Jose",
+    recipientEmail: "jose@depdev7.gov.ph",
+    subject: "MED Division Work Plan Review for Q4",
+    status: "Acknowledged",
+    date: "2026-08-28",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Finance and Administrative Division",
+    division: "Monitoring and Evaluation Division",
+    description: "Directive for supervisor review and alignment of upcoming Q4 division deliverables.",
+    uploadedBy: "Chief Reyes",
+    kind: "incoming",
+    direction: "incoming",
+    origin: "Intake Counter",
+    physicalLocation: "Desk of Supervisor Jose (MED)",
+    physicalStatus: "Received at Desk",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Chief Reyes", date: "2026-08-28", note: "Annual review memo" }],
+    tracking: { lastActor: "dc", lastUpdated: "2026-08-28T15:00:00Z" }
+  },
+  {
+    ref: "DEP-2026-05-0003",
+    type: "Endorsement",
+    category: "Administrative",
+    from: "Supervisor Jose",
+    senderName: "Supervisor Jose",
+    senderEmail: "jose@depdev7.gov.ph",
+    to: "Chief Reyes",
+    recipientName: "Chief Reyes",
+    recipientEmail: "reyes@depdev7.gov.ph",
+    subject: "Leave Application Endorsement",
+    status: "Done",
+    date: "2026-05-14",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Monitoring and Evaluation Division",
+    division: "Monitoring and Evaluation Division",
+    description: "Endorsement of annual leave application for division staff member.",
+    uploadedBy: "Supervisor Jose",
+    kind: "outgoing",
+    direction: "outgoing",
+    origin: "Staff Direct Upload",
+    physicalLocation: "Cabinet 1A - Administrative Archives",
+    physicalStatus: "Filed in Cabinet",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Supervisor Jose", date: "2026-05-14", note: "Approved and filed" }],
+    tracking: { lastActor: "supervisor", lastUpdated: "2026-05-14T10:15:00Z" }
+  },
+  {
+    ref: "DEP-2026-08-0060",
+    type: "Directive",
+    category: "Operations",
+    from: "Supervisor Jose",
+    senderName: "Supervisor Jose",
+    senderEmail: "jose@depdev7.gov.ph",
+    to: "Staff Ana",
+    recipientName: "Staff Ana",
+    recipientEmail: "ana@depdev7.gov.ph",
+    subject: "Special Evaluation Tasking: Regional Agri-Hub Projects",
+    status: "In Progress",
+    date: "2026-08-30",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "High",
+    source: "Monitoring and Evaluation Division",
+    division: "Monitoring and Evaluation Division",
+    description: "Tasking order for conducting rapid evaluation of newly funded agricultural logistics hubs.",
+    uploadedBy: "Supervisor Jose",
+    kind: "outgoing",
+    direction: "outgoing",
+    origin: "Staff Direct Upload",
+    physicalLocation: "Desk of Staff Ana (MED)",
+    physicalStatus: "Received at Desk",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Supervisor Jose", date: "2026-08-30", note: "Task assignment" }],
+    tracking: { lastActor: "supervisor", lastUpdated: "2026-08-30T09:45:00Z" }
+  },
+
+  // -------------------------------------------------------------
+  // CHIEF REYES & CLARA CUSTODIAN (FAD) DOCUMENTS
+  // -------------------------------------------------------------
   {
     ref: "2026-05-001",
     type: "Memorandum",
     category: "Administrative",
     from: "Chief Reyes",
+    senderName: "Chief Reyes",
+    senderEmail: "reyes@depdev7.gov.ph",
     to: "All Staff",
+    recipientName: "All Staff",
     subject: "Division Performance Target 2026",
     status: "In Progress",
     date: "2026-05-14",
@@ -1631,37 +2054,247 @@ var DOCS_DEFAULT = [
     confidentialityLevel: "Internal",
     priority: "Normal",
     source: "Finance and Administrative Division",
-    description: "Sets out the division performance targets for the calendar year 2026.",
+    division: "Finance and Administrative Division",
+    description: "Sets out division performance targets and milestone expectations for CY 2026.",
     uploadedBy: "Chief Reyes",
     kind: "outgoing",
-    division: "Finance and Administrative Division",
+    direction: "outgoing",
+    origin: "Staff Direct Upload",
+    physicalLocation: "Desk of Chief Reyes (FAD)",
+    physicalStatus: "Received at Desk",
     version: 1,
-    versionHistory: [{ version: 1, uploadedBy: "Chief Reyes", date: "2026-05-14", note: "Initial upload" }],
-    tracking: { lastActor: "dc", lastUpdated: "2026-05-14T08:00:00Z" },
+    versionHistory: [{ version: 1, uploadedBy: "Chief Reyes", date: "2026-05-14", note: "Initial release" }],
+    tracking: { lastActor: "dc", lastUpdated: "2026-05-14T08:00:00Z" }
   },
   {
-    ref: "2026-05-002",
-    type: "Report",
-    category: "Operations",
-    from: "Staff Ana",
+    ref: "DEP-2026-08-0070",
+    type: "Bill / Financial",
+    category: "Finance",
+    from: "Clara Custodian",
+    senderName: "Clara Custodian",
+    senderEmail: "clara@depdev7.gov.ph",
     to: "Chief Reyes",
-    subject: "Weekly Accomplishment Report",
+    recipientName: "Chief Reyes",
+    recipientEmail: "reyes@depdev7.gov.ph",
+    subject: "Quarterly Office Utility and Maintenance Budget Allocation",
+    status: "Pending",
+    date: "2026-08-29",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "High",
+    source: "Finance and Administrative Division",
+    division: "Finance and Administrative Division",
+    description: "Financial breakdown and voucher request for Q3 regional office building upkeep.",
+    uploadedBy: "Clara Custodian",
+    kind: "incoming",
+    direction: "incoming",
+    origin: "Intake Counter",
+    physicalLocation: "Desk of Chief Reyes (FAD)",
+    physicalStatus: "Received at Desk",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Clara Custodian", date: "2026-08-29", note: "Voucher submission" }],
+    tracking: { lastActor: "custodian", lastUpdated: "2026-08-29T16:10:00Z" }
+  },
+  {
+    ref: "DEP-2026-09-0001",
+    type: "Memorandum",
+    category: "Administrative",
+    from: "ARD Mark",
+    senderName: "ARD Mark",
+    senderEmail: "mark@depdev7.gov.ph",
+    to: "Chief Reyes",
+    recipientName: "Chief Reyes",
+    recipientEmail: "reyes@depdev7.gov.ph",
+    subject: "FAD Mid-Year Operational Performance Audit",
+    status: "Needs Clarification",
+    date: "2026-09-01",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "High",
+    source: "Office of the Regional Director",
+    division: "Finance and Administrative Division",
+    description: "Audit findings memo regarding budget execution compliance and procurement timelines.",
+    uploadedBy: "ARD Mark",
+    kind: "incoming",
+    direction: "incoming",
+    origin: "Intake Counter",
+    physicalLocation: "Desk of Chief Reyes (FAD)",
+    physicalStatus: "Received at Desk",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "ARD Mark", date: "2026-09-01", note: "Audit findings" }],
+    tracking: { lastActor: "ard", lastUpdated: "2026-09-01T11:00:00Z" }
+  },
+  {
+    ref: "DEP-2026-08-0030",
+    type: "Document Transmittal",
+    category: "Administrative",
+    from: "Sir Harry",
+    senderName: "Sir Harry",
+    senderEmail: "harry@depdev7.gov.ph",
+    to: "Clara Custodian",
+    recipientName: "Clara Custodian",
+    recipientEmail: "clara@depdev7.gov.ph",
+    subject: "Archival Filing Transmittal: 2024 FAD Official Contracts",
+    status: "In Progress",
+    date: "2026-08-18",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Office of the Regional Director",
+    division: "Finance and Administrative Division",
+    description: "Transmittal slip of physical records for cataloging into the central archive vault.",
+    uploadedBy: "Sir Harry",
+    kind: "incoming",
+    direction: "incoming",
+    origin: "OCR Scanner",
+    physicalLocation: "Cabinet 3A - Archive Room",
+    physicalStatus: "Filed in Cabinet",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-08-18", note: "Scanned transmittal" }],
+    tracking: { lastActor: "admin", lastUpdated: "2026-08-18T14:30:00Z" }
+  },
+  {
+    ref: "DEP-2026-09-0004",
+    type: "Report",
+    category: "Administrative",
+    from: "Clara Custodian",
+    senderName: "Clara Custodian",
+    senderEmail: "clara@depdev7.gov.ph",
+    to: "Sir Harry",
+    recipientName: "Sir Harry",
+    recipientEmail: "harry@depdev7.gov.ph",
+    subject: "Monthly Document Archival and Records Clearance Log",
+    status: "Sent",
+    date: "2026-09-04",
+    conf: false,
+    confidentialityLevel: "Internal",
+    priority: "Normal",
+    source: "Finance and Administrative Division",
+    division: "Finance and Administrative Division",
+    description: "Monthly summary report of records retention compliance, folder indexing, and disposal eligibility.",
+    uploadedBy: "Clara Custodian",
+    kind: "outgoing",
+    direction: "outgoing",
+    origin: "Staff Direct Upload",
+    physicalLocation: "Cabinet 3B - Central Archive",
+    physicalStatus: "Filed in Cabinet",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Clara Custodian", date: "2026-09-04", note: "Monthly report submission" }],
+    tracking: { lastActor: "custodian", lastUpdated: "2026-09-04T10:00:00Z" }
+  },
+
+  // -------------------------------------------------------------
+  // ARD MARK & DIR. RDJEN & SIR HARRY (ORD) DOCUMENTS
+  // -------------------------------------------------------------
+  {
+    ref: "2026-05-005",
+    type: "Letter",
+    category: "Operations",
+    from: "External Partner",
+    to: "Dir. RDJEN",
+    recipientName: "Dir. RDJEN",
+    recipientEmail: "rdjen@depdev7.gov.ph",
+    subject: "Invitation: Regional Development & Planning Summit",
+    status: "In Progress",
+    date: "2026-05-14",
+    conf: false,
+    confidentialityLevel: "Public",
+    priority: "High",
+    source: "External / NEDA Central Office",
+    division: "Office of the Regional Director",
+    description: "Formal invitation to lead the annual Regional Planning Summit.",
+    uploadedBy: "Sir Harry",
+    kind: "incoming",
+    direction: "incoming",
+    origin: "Email Import",
+    physicalLocation: "Office of the Regional Director",
+    physicalStatus: "Received at Desk",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-05-14", note: "Imported from email" }],
+    tracking: { lastActor: "rd", lastUpdated: "2026-05-14T13:45:00Z" }
+  },
+  {
+    ref: "2026-05-006",
+    type: "Endorsement",
+    category: "Planning",
+    from: "Chief Reyes",
+    to: "ARD Mark",
+    recipientName: "ARD Mark",
+    recipientEmail: "mark@depdev7.gov.ph",
+    subject: "Project Proposal Review Request — Policy Plan",
     status: "In Progress",
     date: "2026-05-14",
     conf: false,
     confidentialityLevel: "Internal",
-    priority: "Normal",
-    source: "Monitoring and Evaluation Division",
-    description: "Weekly accomplishment report for the period ending May 14, 2026.",
-    uploadedBy: "Staff Ana",
+    priority: "High",
+    source: "Policy Formulation and Planning Division",
+    division: "Office of the Regional Director",
+    description: "Request for executive review of regional strategy proposal prior to council presentation.",
+    uploadedBy: "Chief Reyes",
     kind: "incoming",
-    division: "Finance and Administrative Division",
-    version: 2,
-    versionHistory: [
-      { version: 1, uploadedBy: "Staff Ana", date: "2026-05-07", note: "Initial submission" },
-      { version: 2, uploadedBy: "Staff Ana", date: "2026-05-14", note: "Revised with updated figures" }
-    ],
-    tracking: { lastActor: "staff", lastUpdated: "2026-05-14T09:30:00Z" },
+    direction: "incoming",
+    origin: "Intake Counter",
+    physicalLocation: "Desk of ARD Mark (ORD)",
+    physicalStatus: "Received at Desk",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Chief Reyes", date: "2026-05-14", note: "Proposal transmittal" }],
+    tracking: { lastActor: "ard", lastUpdated: "2026-05-14T14:20:00Z" }
+  },
+  {
+    ref: "2026-05-004",
+    type: "Memorandum",
+    category: "Administrative",
+    from: "Sir Harry",
+    senderName: "Sir Harry",
+    senderEmail: "harry@depdev7.gov.ph",
+    to: "Regional Staff",
+    recipientName: "Regional Staff",
+    subject: "DMS System Maintenance Advisory",
+    status: "Acknowledged",
+    date: "2026-05-14",
+    conf: false,
+    confidentialityLevel: "Public",
+    priority: "Normal",
+    source: "Office of the Regional Director",
+    division: "Office of the Regional Director",
+    description: "Advisory on scheduled IT infrastructure optimization.",
+    uploadedBy: "Sir Harry",
+    kind: "outgoing",
+    direction: "outgoing",
+    origin: "Staff Direct Upload",
+    physicalLocation: "ORD Main Notice Board",
+    physicalStatus: "Filed in Cabinet",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Sir Harry", date: "2026-05-14", note: "System broadcast" }],
+    tracking: { lastActor: "admin", lastUpdated: "2026-05-14T11:00:00Z" }
+  },
+  {
+    ref: "DEP-2026-06-0015",
+    type: "Memorandum",
+    category: "Administrative",
+    from: "Dir. RDJEN",
+    senderName: "Dir. RDJEN",
+    senderEmail: "rdjen@depdev7.gov.ph",
+    to: "All Personnel",
+    recipientName: "All Personnel",
+    subject: "Memorandum No. 2026-015: Regional Executive Alignment",
+    status: "Done",
+    date: "2026-06-12",
+    conf: false,
+    confidentialityLevel: "Public",
+    priority: "High",
+    source: "Office of the Regional Director",
+    division: "Office of the Regional Director",
+    description: "Official executive directive establishing mid-year performance review targets.",
+    uploadedBy: "Dir. RDJEN",
+    kind: "outgoing",
+    direction: "outgoing",
+    origin: "Staff Direct Upload",
+    physicalLocation: "Office of the Regional Director",
+    physicalStatus: "Filed in Cabinet",
+    version: 1,
+    versionHistory: [{ version: 1, uploadedBy: "Dir. RDJEN", date: "2026-06-12", note: "Directorate approval" }],
+    tracking: { lastActor: "rd", lastUpdated: "2026-06-12T09:00:00Z" }
   },
   {
     ref: "2026-05-003",
@@ -2532,14 +3165,26 @@ function initializeDocuments() {
   var saved = localStorage.getItem('depdev_docs');
   if (saved) {
     try {
-      DOCS = JSON.parse(saved);
-      console.log('Loaded', DOCS.length, 'documents from localStorage');
-      return;
+      var parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        var existingRefs = new Set(parsed.map(function (d) { return d.ref; }));
+        DOCS_DEFAULT.forEach(function (defDoc) {
+          if (!existingRefs.has(defDoc.ref)) {
+            parsed.push(defDoc);
+          }
+        });
+        DOCS = parsed;
+        saveDocuments();
+        console.log('Loaded and merged', DOCS.length, 'documents from localStorage');
+        return;
+      }
     } catch (e) {
       console.error('Failed to load documents from localStorage:', e);
     }
   }
   // If no saved docs or error, use DOCS_DEFAULT
+  DOCS = DOCS_DEFAULT.slice();
+  saveDocuments();
   console.log('Using default documents');
 }
 
@@ -2819,6 +3464,7 @@ var MASTER_NAV = [
       { icon: svgIcon("inbox"), text: "Incoming Documents", page: "incoming" },
       { icon: svgIcon("send"), text: "Outgoing Documents", page: "outgoing" },
       { icon: svgIcon("clipboard"), text: "Document Logbook", page: "logbook" },
+      { icon: svgIcon("filetext"), text: "Submitted Files", page: "submitted" },
     ],
   },
   {
@@ -2879,10 +3525,12 @@ function getNav() {
       if (item.page === "outgoing" && (r === "dc" || r === "custodian"))
         item.text = "Division Outgoing";
       if (item.page === "outgoing" && r === "staff")
-        item.text = "My Submissions";
+        item.text = "Outgoing Documents";
+      if (item.page === "submitted" && r === "staff")
+        item.text = "Submitted Files";
       if (item.page === "logbook" && (r === "dc" || r === "custodian")) item.text = "Division Logbook";
       if (item.page === "archive" && (r === "dc" || r === "custodian")) item.text = "Division Archive";
-      if (item.page === "users" && (r === "dc" || r === "custodian"))
+      if (item.page === "users" && r === "dc")
         item.text = "Division User Management";
     });
   });
@@ -3525,6 +4173,7 @@ function showPage(page) {
     dashboard: "Dashboard",
     incoming: "Incoming Documents",
     outgoing: "Outgoing Documents",
+    submitted: "Submitted Files",
     logbook: "Admin Logbook — Document Intake",
     "document-trail": "Document Trail",
     users: "User Management",
@@ -3540,33 +4189,42 @@ function showPage(page) {
   document.title = pageTitle + " | DepDev DMS Prototype";
   var c = document.getElementById("main-content");
   var titleHeader = renderPageHeader(titles[page] || page);
-  if (page === "dashboard") c.innerHTML = titleHeader + renderDashboard();
-  else if (page === "enhanced-reports")
-    c.innerHTML = titleHeader + renderEnhancedReports();
-  else if (page === "archive") c.innerHTML = titleHeader + renderArchive();
-  else if (page === "disposal") c.innerHTML = titleHeader + renderDisposal();
-  else if (page === "users") c.innerHTML = titleHeader + renderUsers();
-  else if (page === "search") c.innerHTML = titleHeader + renderSearch();
-  else if (page === "reports") c.innerHTML = titleHeader + renderReports();
-  else if (page === "compose") c.innerHTML = titleHeader + renderCompose();
-  else if (page === "profile") c.innerHTML = titleHeader + renderProfile();
-  else if (page === "settings") c.innerHTML = titleHeader + renderSettings();
-  else if (page === "notifications")
-    c.innerHTML = titleHeader + renderNotifications();
-  else if (page === "announcements") {
-    c.innerHTML = titleHeader + renderAnnouncementsPage();
-    renderAnnouncementsPageList("");
+  try {
+    if (page === "dashboard") c.innerHTML = titleHeader + renderDashboard();
+    else if (page === "enhanced-reports")
+      c.innerHTML = titleHeader + renderEnhancedReports();
+    else if (page === "archive") c.innerHTML = titleHeader + renderArchive();
+    else if (page === "disposal") c.innerHTML = titleHeader + renderDisposal();
+    else if (page === "users") c.innerHTML = titleHeader + renderUsers();
+    else if (page === "search") c.innerHTML = titleHeader + renderSearch();
+    else if (page === "reports") c.innerHTML = titleHeader + renderReports();
+    else if (page === "compose") c.innerHTML = titleHeader + renderCompose();
+    else if (page === "profile") c.innerHTML = titleHeader + renderProfile();
+    else if (page === "settings") c.innerHTML = titleHeader + renderSettings();
+    else if (page === "notifications")
+      c.innerHTML = titleHeader + renderNotifications();
+    else if (page === "announcements") {
+      c.innerHTML = titleHeader + renderAnnouncementsPage();
+      renderAnnouncementsPageList("");
+    }
+    else if (page === "outgoing") c.innerHTML = titleHeader + renderOutgoing();
+    else if (page === "incoming") c.innerHTML = titleHeader + renderIncoming();
+    else if (page === "submitted") c.innerHTML = titleHeader + renderSubmittedFiles();
+    else if (page === "logbook") c.innerHTML = titleHeader + renderLogbook();
+    else if (page === "document-trail")
+      c.innerHTML = titleHeader + renderDocumentTrail(currentEditingRef || "");
+    else
+      c.innerHTML =
+        titleHeader +
+        '<div class="card" style="padding:2rem;text-align:center;color:var(--muted)"><div style="font-size:40px;margin-bottom:1rem">' + svgIcon("alert", 40) + '</div><div style="font-size:16px">This section is under development.</div></div>';
+  } catch (err) {
+    console.error("Error rendering page:", page, err);
+    if (c) {
+      c.innerHTML = titleHeader + '<div class="card" style="padding:2rem;text-align:center;color:var(--danger)"><div style="font-size:16px;font-weight:600;">Error rendering view: ' + escapeHtml(err.message) + '</div></div>';
+    }
+  } finally {
+    showLoading(false);
   }
-  else if (page === "outgoing") c.innerHTML = titleHeader + renderOutgoing();
-  else if (page === "incoming") c.innerHTML = titleHeader + renderIncoming();
-  else if (page === "logbook") c.innerHTML = titleHeader + renderLogbook();
-  else if (page === "document-trail")
-    c.innerHTML = titleHeader + renderDocumentTrail(currentEditingRef || "");
-  else
-    c.innerHTML =
-      titleHeader +
-      '<div class="card" style="padding:2rem;text-align:center;color:var(--muted)"><div style="font-size:40px;margin-bottom:1rem">' + svgIcon("alert", 40) + '</div><div style="font-size:16px">This section is under development.</div></div>';
-  showLoading(false);
 }
 
 function renderPageHeader(title) {
@@ -3598,6 +4256,16 @@ function statusPill(s) {
 // ═══════════════════════════════════════════════════════════════════════════
 // WORKFLOW STATUS DROPDOWN - REPLACES STATIC STATUS BADGES
 // ═══════════════════════════════════════════════════════════════════════════
+
+var WORKFLOW_STATUSES = [
+  { value: "Sent", label: "Sent" },
+  { value: "Acknowledged", label: "Acknowledged" },
+  { value: "In Progress", label: "In Progress" },
+  { value: "Needs Clarification", label: "Needs Clarification" },
+  { value: "On Hold", label: "On Hold" },
+  { value: "Done", label: "Done" }
+];
+var workflowStatuses = WORKFLOW_STATUSES;
 
 function renderStatusDropdown(docRef, currentStatus, isEditable) {
   // Normalize current status
@@ -3654,7 +4322,7 @@ function renderStatusDropdown(docRef, currentStatus, isEditable) {
     'background-size:12px;' +
     '">';
 
-  workflowStatuses.forEach(function (opt) {
+  WORKFLOW_STATUSES.forEach(function (opt) {
     var selected = (opt.value === status) ? ' selected' : '';
     html += '<option value="' + escapeHtml(opt.value) + '"' + selected + '>' + escapeHtml(opt.label) + '</option>';
   });
@@ -4417,6 +5085,46 @@ function renderOutgoing() {
   return h;
 }
 
+function renderSubmittedFiles() {
+  currentSubmittedTab = "all";
+  var visibleDocs = getVisibleDocumentsForRole();
+  var submittedDocs = visibleDocs.filter(function (d) {
+    return (
+      (d.uploadedBy && d.uploadedBy === currentUser.name) ||
+      (d.from && (d.from === currentUser.name || d.from.indexOf(currentUser.name) !== -1)) ||
+      isOutgoingDocumentForUser(d, currentUser)
+    );
+  });
+  var h = "";
+  h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">';
+  h += '<div class="tab-bar" id="sub-tabs"><div class="tab active" onclick="setTab(this,\'all\')">All</div><div class="tab" onclick="setTab(this,\'active\')">Active</div><div class="tab" onclick="setTab(this,\'onhold\')">On Hold</div><div class="tab" onclick="setTab(this,\'done\')">Done</div></div>';
+  h += "</div>";
+  h += '<div class="card"><div class="card-head"><div class="card-title">Submitted Files</div><div id="submitted-count" style="font-size:12px;color:var(--muted)">' + submittedDocs.length + " records</div></div>";
+  h += '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference No.</th><th>Direction</th><th>Type</th><th>To</th><th>Division</th><th>Subject</th><th>Priority</th><th>Status</th><th>Actions</th></tr></thead><tbody id="submitted-tbody">';
+  if (submittedDocs.length === 0) {
+    h += emptyStateRow(9, svgIcon("send", 40), "No submitted files", "Files you submit or upload will appear here.");
+  } else {
+    submittedDocs.forEach(function (d) {
+      var conf = d.conf ? '<span class="pill pill-red" style="margin-left:4px">Conf.</span>' : "";
+      var divFull = d.division || "";
+      var divAbbrev = divFull ? getDivisionAbbrev(divFull) : "—";
+      var directionBadge = d.direction === "incoming"
+        ? '<span class="direction-badge direction-incoming">INCOMING</span>'
+        : '<span class="direction-badge direction-outgoing">OUTGOING</span>';
+      var priorityBadge = d.priority && d.priority !== "Normal"
+        ? '<span class="pill pill-' + (d.priority === "Urgent" || d.priority === "High" ? "red" : "amber") + '" style="margin-left:4px">' + d.priority + '</span>'
+        : "";
+
+      var isRecipient = isCurrentUserRecipient(d);
+      var statusDisplay = renderStatusDropdown(d.ref, d.status, isRecipient);
+
+      h += '<tr><td style="font-family:monospace;font-size:12px">' + d.ref + "</td><td>" + directionBadge + "</td><td>" + d.type + conf + "</td><td>" + escapeHtml(d.to || "—") + "</td><td title=\"" + escapeHtml(divFull) + "\">" + divAbbrev + "</td><td>" + escapeHtml(d.subject) + "</td><td>" + priorityBadge + "</td><td>" + statusDisplay + "</td><td>" + renderActionsMenu(d.ref) + "</td></tr>";
+    });
+  }
+  h += "</tbody></table></div></div>";
+  return h;
+}
+
 function renderLogbook() {
   var h = "";
 
@@ -5066,7 +5774,7 @@ function renderUsers() {
   return h;
 }
 
-var USER_ACCOUNTS = [
+var USER_ACCOUNTS_DEFAULT = [
   {
     id: "u-admin",
     name: "Sir Harry",
@@ -5178,7 +5886,6 @@ var USER_ACCOUNTS = [
       "logbook",
       "search",
       "archive",
-      "users",
       "notifications",
       "announcements",
       "enhanced-reports",
@@ -5188,9 +5895,9 @@ var USER_ACCOUNTS = [
     id: "u-staff-ana",
     name: "Staff Ana",
     role: "Staff",
-    division: "Finance and Administrative Division",
+    division: "Monitoring and Evaluation Division",
     email: "ana@depdev7.gov.ph",
-    status: "Pending",
+    status: "Active",
     tempPassword: "password",
     docAccess: "Division",
     funcAccess: "Basic",
@@ -5199,6 +5906,7 @@ var USER_ACCOUNTS = [
       "incoming",
       "outgoing",
       "logbook",
+      "submitted",
       "search",
       "notifications",
       "announcements",
@@ -5222,10 +5930,29 @@ var USER_ACCOUNTS = [
       "logbook",
       "notifications",
       "announcements",
-      "enhanced-reports",
     ],
   },
 ];
+
+var USER_ACCOUNTS = (function () {
+  try {
+    if (typeof localStorage !== "undefined") {
+      var saved = localStorage.getItem("depdev_user_accounts");
+      if (saved) {
+        var parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          parsed.forEach(function (u) {
+            if (canonicalRole(u.role) === "custodian" && Array.isArray(u.features)) {
+              u.features = u.features.filter(function (feat) { return feat !== "users"; });
+            }
+          });
+          return parsed;
+        }
+      }
+    }
+  } catch (e) { }
+  return USER_ACCOUNTS_DEFAULT;
+})();
 
 function getFeaturesForRole(role) {
   var c = canonicalRole(role);
@@ -5236,11 +5963,16 @@ function getFeaturesForRole(role) {
     "outgoing",
     "logbook",
     "search",
-    "users",
     "notifications",
     "announcements",
     "enhanced-reports",
   ];
+  if (c !== "custodian" && c !== "supervisor") {
+    f.push("users");
+  }
+  if (c === "staff") {
+    f.push("submitted");
+  }
   if (fullArchiveRoles.includes(c)) {
     f.push("archive");
   }
@@ -5426,6 +6158,7 @@ function openStatusModal(userId) {
     }).then(function (ok) {
       if (!ok) return;
       user.status = "Active";
+      saveUserAccounts();
       setUserMgmtNotice("Account approved: " + user.name + " is now Active.");
       showSuccess("Account approved: " + user.name + " is now Active.");
       closeUserMgmtModal();
@@ -5447,6 +6180,7 @@ function openStatusModal(userId) {
     }).then(function (ok) {
       if (!ok) return;
       user.status = "Deactivated";
+      saveUserAccounts();
       setUserMgmtNotice(
         "Account status updated: " + user.name + " is now Deactivated.",
       );
@@ -5460,6 +6194,14 @@ function openStatusModal(userId) {
   }
   userMgmtModal = { type: "status", userId: user.id, resetMode: "manual" };
   showPage("users");
+}
+
+function saveUserAccounts() {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem("depdev_user_accounts", JSON.stringify(USER_ACCOUNTS));
+    }
+  } catch (e) { }
 }
 
 function confirmToggleStatus() {
@@ -5485,6 +6227,7 @@ function confirmToggleStatus() {
     return;
   }
   user.status = nextStatus;
+  saveUserAccounts();
   setUserMgmtNotice(
     "Account status updated: " + user.name + " is now " + nextStatus + ".",
   );
